@@ -2,11 +2,12 @@
   "name": "larger",
   "version": "0.0.1",
   "private": true,
+  "packageManager": "pnpm@10.32.1",
   "type": "module",
   "main": "electron/main.mjs",
   "description": "A visual design studio for React projects.",
   "scripts": {
-    "dev": "concurrently --kill-others --names api,studio,electron --prefix-colors cyan,magenta,yellow \"npm:dev:api\" \"npm:dev:studio\" \"npm:dev:electron\"",
+    "dev": "concurrently --kill-others --names api,studio,electron --prefix-colors cyan,magenta,yellow \"pnpm:dev:api\" \"pnpm:dev:studio\" \"pnpm:dev:electron\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:studio": "vite --host 127.0.0.1",
     "dev:electron": "wait-on http://127.0.0.1:4310 http://127.0.0.1:4311/api/health && electron electron/main.mjs",
@@ -41,6 +42,11 @@
     "typescript": "^5.9.2",
     "vite": "^7.1.1",
     "wait-on": "^8.0.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "engines": {
     "node": ">=20"

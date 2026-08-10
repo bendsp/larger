@@ -7,9 +7,9 @@ import {
   ComponentIcon,
   FileCodeIcon,
   ImageIcon,
-  LaptopIcon,
   MonitorIcon,
   MonitorPlayIcon,
+  PanelRightOpenIcon,
   PaletteIcon,
   PlayIcon,
   RefreshCwIcon,
@@ -46,7 +46,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import {
   Item,
@@ -84,15 +84,15 @@ function WorkspaceHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <header className="flex min-h-16 items-center gap-3 border-b px-5 py-3">
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-muted/40">
-        <Icon className="size-4" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <h1 className="truncate text-sm font-medium">{title}</h1>
-        <p className="truncate text-xs text-muted-foreground">{description}</p>
-      </div>
-      {actions}
+    <header className="border-b px-3 py-1.5">
+      <Item size="sm" className="px-2">
+        <ItemMedia variant="icon"><Icon /></ItemMedia>
+        <ItemContent className="min-w-0">
+          <ItemTitle role="heading" aria-level={1}>{title}</ItemTitle>
+          <ItemDescription className="truncate text-xs">{description}</ItemDescription>
+        </ItemContent>
+        {actions && <ItemActions>{actions}</ItemActions>}
+      </Item>
     </header>
   );
 }
@@ -111,6 +111,35 @@ function EmptyInventory({ label }: { label: string }) {
 
 function PartialScanBadge({ visible }: { visible: boolean }) {
   return visible ? <Badge variant="outline">Partial scan</Badge> : null;
+}
+
+function SectionHeading({ title, count }: { title: string; count: number }) {
+  return (
+    <div className="flex items-center justify-between">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</h2>
+      <Badge variant="outline">{count}</Badge>
+    </div>
+  );
+}
+
+function CompactEmpty({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: typeof BoxIcon;
+  title: string;
+  description?: string;
+}) {
+  return (
+    <Empty className="min-h-32 rounded-none border-0">
+      <EmptyHeader>
+        <EmptyMedia variant="icon"><Icon /></EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        {description && <EmptyDescription>{description}</EmptyDescription>}
+      </EmptyHeader>
+    </Empty>
+  );
 }
 
 export function ComponentsWorkspace({
@@ -144,11 +173,8 @@ export function ComponentsWorkspace({
           ) : project.components.length === 0 ? <EmptyInventory label="Components" /> : groups.map((group) => (
             group.items.length > 0 && (
               <section className="flex flex-col gap-3" key={group.label}>
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.label}</h2>
-                  <span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>
-                </div>
-                <ItemGroup className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+                <SectionHeading title={group.label} count={group.items.length} />
+                <ItemGroup role="group" aria-label={group.label} className="grid grid-cols-2 gap-3 xl:grid-cols-3">
                   {group.items.map((component) => (
                     <ComponentItem
                       component={component}
@@ -178,18 +204,11 @@ function ComponentItem({
 }) {
   return (
     <Item
-      role="listitem"
+      render={<button type="button" aria-label={`Inspect ${component.name}`} aria-pressed={isSelected} onClick={onSelect} />}
       variant={isSelected ? "muted" : "outline"}
-      className="relative min-w-0 flex-nowrap text-left hover:bg-muted/50"
+      className="min-w-0 flex-nowrap text-left"
     >
-      <Button
-        aria-label={`Inspect ${component.name}`}
-        aria-pressed={isSelected}
-        className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
-        variant="ghost"
-        onClick={onSelect}
-      />
-      <ItemMedia variant="icon" className="size-9 rounded-lg border bg-background">
+      <ItemMedia variant="icon">
         <ComponentIcon />
       </ItemMedia>
       <ItemContent className="min-w-0">
@@ -228,10 +247,12 @@ export function DesignSystemWorkspace({
                   <CardTitle>Foundation</CardTitle>
                   <CardDescription>Detected project styling infrastructure</CardDescription>
                 </CardHeader>
-                <CardContent className="grid gap-3 text-sm">
-                  <Fact label="Tailwind" value={project.brand.tailwindConfig ?? "Not found"} />
-                  <Fact label="ShadCN" value={project.brand.shadcn.detected ? project.brand.shadcn.style ?? "Detected" : "Not found"} />
-                  <Fact label="Icons" value={project.brand.shadcn.iconLibrary ?? "Not specified"} />
+                <CardContent>
+                  <ItemGroup className="gap-0">
+                    <Fact label="Tailwind" value={project.brand.tailwindConfig ?? "Not found"} />
+                    <Fact label="ShadCN" value={project.brand.shadcn.detected ? project.brand.shadcn.style ?? "Detected" : "Not found"} />
+                    <Fact label="Icons" value={project.brand.shadcn.iconLibrary ?? "Not specified"} />
+                  </ItemGroup>
                 </CardContent>
               </Card>
               <Card>
@@ -239,18 +260,22 @@ export function DesignSystemWorkspace({
                   <CardTitle>Typography</CardTitle>
                   <CardDescription>{project.brand.fonts.length} font families discovered</CardDescription>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-3">
+                <CardContent>
                   {project.brand.fonts.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No font declarations found.</p>
-                  ) : project.brand.fonts.map((font) => (
-                    <div className="flex items-center gap-3" key={font.family}>
-                      <div className="flex size-10 items-center justify-center rounded-lg border bg-muted/40 text-lg">Ag</div>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{font.family}</p>
-                        <p className="truncate text-xs text-muted-foreground">{font.weights.join(", ") || "Weights not declared"}</p>
-                      </div>
-                    </div>
-                  ))}
+                    <CompactEmpty icon={FileCodeIcon} title="No font declarations" />
+                  ) : (
+                    <ItemGroup>
+                      {project.brand.fonts.map((font) => (
+                        <Item role="listitem" size="sm" variant="outline" key={font.family}>
+                          <ItemMedia>Ag</ItemMedia>
+                          <ItemContent className="min-w-0">
+                            <ItemTitle>{font.family}</ItemTitle>
+                            <ItemDescription className="truncate text-xs">{font.weights.join(", ") || "Weights not declared"}</ItemDescription>
+                          </ItemContent>
+                        </Item>
+                      ))}
+                    </ItemGroup>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -269,10 +294,14 @@ export function DesignSystemWorkspace({
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b pb-2 last:border-0 last:pb-0">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="truncate font-mono text-xs" title={value}>{value}</span>
-    </div>
+    <Item role="listitem" size="xs" className="rounded-none px-0">
+      <ItemContent>
+        <ItemDescription>{label}</ItemDescription>
+      </ItemContent>
+      <ItemActions className="min-w-0 max-w-2/3">
+        <span className="truncate font-mono text-xs" title={value}>{value}</span>
+      </ItemActions>
+    </Item>
   );
 }
 
@@ -290,29 +319,28 @@ function TokenSection({
   if (tokens.length === 0) return null;
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label} tokens</h2>
-        <span className="text-xs tabular-nums text-muted-foreground">{tokens.length}</span>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
+      <SectionHeading title={`${label} tokens`} count={tokens.length} />
+      <ItemGroup role="group" aria-label={`${label} tokens`} className="grid grid-cols-2 gap-2">
         {tokens.map((token) => {
           const selected = selection?.kind === "token" && selection.value.name === token.name && selection.value.mode === token.mode;
           return (
-            <Button
-              variant={selected ? "secondary" : "outline"}
-              className="h-auto min-w-0 justify-start px-2.5 py-2 text-left"
+            <Item
+              render={<button type="button" aria-pressed={selected} onClick={() => onSelect({ kind: "token", value: token })} />}
+              variant={selected ? "muted" : "outline"}
+              className="min-w-0 flex-nowrap text-left"
               key={`${token.mode}-${token.name}-${token.value}`}
-              onClick={() => onSelect({ kind: "token", value: token })}
             >
-              <span className="size-7 shrink-0 rounded-md border" style={{ background: token.value }} />
-              <span className="min-w-0">
-                <span className="block truncate text-xs font-medium">{token.name.replace(/^--/, "")}</span>
-                <span className="block truncate font-mono text-[10px] font-normal text-muted-foreground">{token.value}</span>
-              </span>
-            </Button>
+              <ItemMedia>
+                <span className="size-7 rounded-md border" style={{ background: token.value }} />
+              </ItemMedia>
+              <ItemContent className="min-w-0">
+                <ItemTitle>{token.name.replace(/^--/, "")}</ItemTitle>
+                <ItemDescription className="truncate font-mono text-xs">{token.value}</ItemDescription>
+              </ItemContent>
+            </Item>
           );
         })}
-      </div>
+      </ItemGroup>
     </section>
   );
 }
@@ -337,7 +365,7 @@ export function AssetsWorkspace({
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto w-full max-w-5xl p-6">
           {!project ? <Skeleton className="h-80" /> : project.assets.length === 0 ? <EmptyInventory label="Assets" /> : (
-            <ItemGroup className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
+            <ItemGroup role="group" aria-label="Project assets" className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
               {project.assets.map((asset) => <AssetItem
                 asset={asset}
                 isSelected={selection?.kind === "asset" && selection.value.path === asset.path}
@@ -355,18 +383,11 @@ export function AssetsWorkspace({
 function AssetItem({ asset, isSelected, onSelect }: { asset: ProjectAsset; isSelected: boolean; onSelect: () => void }) {
   return (
     <Item
-      role="listitem"
+      render={<button type="button" aria-label={`Inspect ${asset.name}`} aria-pressed={isSelected} onClick={onSelect} />}
       variant={isSelected ? "muted" : "outline"}
-      className="relative min-w-0 flex-nowrap text-left hover:bg-muted/50"
+      className="min-w-0 flex-nowrap text-left"
     >
-      <Button
-        aria-label={`Inspect ${asset.name}`}
-        aria-pressed={isSelected}
-        className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
-        variant="ghost"
-        onClick={onSelect}
-      />
-      <ItemMedia variant={asset.previewUrl ? "image" : "icon"} className="size-10 rounded-md border bg-muted/40">
+      <ItemMedia variant={asset.previewUrl ? "image" : "icon"}>
         {asset.previewUrl ? <img src={asset.previewUrl} alt="" loading="lazy" /> : <FileCodeIcon />}
       </ItemMedia>
       <ItemContent className="min-w-0">
@@ -401,46 +422,45 @@ export function RoutesWorkspace({
           {!project ? <Skeleton className="h-72" /> : project.routes.length === 0 ? <EmptyInventory label="Routes" /> : (
             <ItemGroup className="gap-2">
               {project.routes.map((route) => (
-                <Item
-                  role="listitem"
-                  variant={selection?.kind === "route" && selection.value.file === route.file ? "muted" : "outline"}
-                  key={route.file}
-                  className="relative flex-nowrap"
-                >
-                  <Button
-                    aria-label={`Inspect route ${route.path}`}
-                    aria-pressed={selection?.kind === "route" && selection.value.file === route.file}
-                    className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
-                    variant="ghost"
-                    onClick={() => onSelect({ kind: "route", value: route })}
-                  />
-                  <ItemMedia variant="icon"><RouteIcon /></ItemMedia>
-                  <ItemContent className="min-w-0">
-                    <ItemTitle className="font-mono">{route.path}</ItemTitle>
-                    <ItemDescription className="truncate font-mono text-xs">{route.file}</ItemDescription>
-                  </ItemContent>
-                  <ItemActions className="relative z-20">
-                    <Badge variant="outline">{route.kind}</Badge>
-                    <Tooltip>
-                      <TooltipTrigger render={
-                        <Button
-                          aria-disabled={route.kind === "dynamic"}
-                          aria-label={`Open ${route.path} in canvas`}
-                          size="icon-sm"
-                          variant="ghost"
-                          onClick={() => {
-                            if (route.kind !== "dynamic") onOpen(route.path);
-                          }}
-                        />
-                      }>
-                        <MonitorPlayIcon />
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {route.kind === "dynamic" ? "Dynamic routes need fixture data" : "Open in canvas"}
-                      </TooltipContent>
-                    </Tooltip>
-                  </ItemActions>
-                </Item>
+                <div role="listitem" className="flex items-center gap-2" key={route.file}>
+                  <Item
+                    render={
+                      <button
+                        type="button"
+                        aria-label={`Inspect route ${route.path}`}
+                        aria-pressed={selection?.kind === "route" && selection.value.file === route.file}
+                        onClick={() => onSelect({ kind: "route", value: route })}
+                      />
+                    }
+                    variant={selection?.kind === "route" && selection.value.file === route.file ? "muted" : "outline"}
+                    className="min-w-0 flex-1 flex-nowrap text-left"
+                  >
+                    <ItemMedia variant="icon"><PanelRightOpenIcon /></ItemMedia>
+                    <ItemContent className="min-w-0">
+                      <ItemTitle className="font-mono">{route.path}</ItemTitle>
+                      <ItemDescription className="truncate font-mono text-xs">{route.file}</ItemDescription>
+                    </ItemContent>
+                    <ItemActions><Badge variant="outline">{route.kind}</Badge></ItemActions>
+                  </Item>
+                  <Tooltip>
+                    <TooltipTrigger render={
+                      <Button
+                        aria-disabled={route.kind === "dynamic"}
+                        aria-label={`Open ${route.path} in canvas`}
+                        size="icon"
+                        variant="outline"
+                        onClick={() => {
+                          if (route.kind !== "dynamic") onOpen(route.path);
+                        }}
+                      />
+                    }>
+                      <MonitorPlayIcon />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {route.kind === "dynamic" ? "Dynamic routes need fixture data" : "Open in canvas"}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               ))}
             </ItemGroup>
           )}
@@ -475,7 +495,7 @@ export function ServersWorkspace({
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-6">
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><LaptopIcon className="size-4" /> Project dev server</CardTitle>
+              <CardTitle>Project dev server</CardTitle>
               <CardDescription>Managed in an isolated working copy for this session.</CardDescription>
               <CardAction>
                 <Badge variant={running ? "default" : session.phase === "error" ? "destructive" : "outline"}>
@@ -484,22 +504,24 @@ export function ServersWorkspace({
               </CardAction>
             </CardHeader>
             <CardContent className="flex flex-col gap-5">
-              <Field>
-                <FieldLabel htmlFor="server-address">Launch address</FieldLabel>
-                <InputGroup>
-                  <InputGroupInput
-                    id="server-address"
-                    readOnly={running || isBusy}
-                    aria-readonly={running || isBusy}
-                    inputMode="url"
-                    spellCheck={false}
-                    value={address}
-                    onChange={(event) => onAddressChange(event.target.value)}
-                  />
-                </InputGroup>
-                <FieldDescription>Use localhost or 127.0.0.1 with a preferred port. If occupied, Larger chooses the next free port.</FieldDescription>
-              </Field>
-              <div className="flex flex-col gap-3">
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="server-address">Launch address</FieldLabel>
+                  <InputGroup>
+                    <InputGroupInput
+                      id="server-address"
+                      readOnly={running || isBusy}
+                      aria-readonly={running || isBusy}
+                      inputMode="url"
+                      spellCheck={false}
+                      value={address}
+                      onChange={(event) => onAddressChange(event.target.value)}
+                    />
+                  </InputGroup>
+                  <FieldDescription>Use localhost or 127.0.0.1 with a preferred port. If occupied, Larger chooses the next free port.</FieldDescription>
+                </Field>
+              </FieldGroup>
+              <ItemGroup className="gap-0">
                 <Fact
                   label={session.server.active ? "Command" : "Command template"}
                   value={(session.server.active?.command ?? session.server.configured.command).join(" ")}
@@ -507,7 +529,7 @@ export function ServersWorkspace({
                 <Fact label="Editor" value={`${session.adapter.name}${session.adapter.version ? ` ${session.adapter.version}` : ""}`} />
                 <Fact label="Active target" value={session.server.active?.url ?? "—"} />
                 <Fact label="Editor surface" value={session.surface?.url ?? "—"} />
-              </div>
+              </ItemGroup>
             </CardContent>
             <CardFooter className="justify-between gap-3">
               <p className="text-xs text-muted-foreground">Only processes started by Larger can be stopped here.</p>
@@ -531,19 +553,25 @@ export function ServersWorkspace({
             </TabsList>
             <TabsContent value="output" className="rounded-xl border bg-card">
               <ScrollArea className="h-64">
-                <div className="flex flex-col gap-2 p-4 font-mono text-xs">
-                  {session.logs.length === 0 ? <p className="text-muted-foreground">Launch the project to see server output.</p> : [...session.logs].reverse().map((log, index) => (
+                {session.logs.length === 0 ? (
+                  <CompactEmpty icon={TerminalIcon} title="No server output" description="Launch the project to see its logs." />
+                ) : (
+                  <div className="flex flex-col gap-2 p-4 font-mono text-xs">
+                    {[...session.logs].reverse().map((log, index) => (
                     <div className="grid grid-cols-[64px_1fr] gap-3" key={`${log.at}-${index}`}>
                       <span className="uppercase text-muted-foreground">{log.source}</span>
                       <span className="break-words text-foreground/80">{log.message}</span>
                     </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </ScrollArea>
             </TabsContent>
             <TabsContent value="changes" className="rounded-xl border bg-card">
               <div className="p-4">
-                {session.changes.length === 0 ? <p className="text-sm text-muted-foreground">No sandbox changes.</p> : (
+                {session.changes.length === 0 ? (
+                  <CompactEmpty icon={BracesIcon} title="No sandbox changes" description="Confirmed editor changes will appear here." />
+                ) : (
                   <ItemGroup className="gap-1">
                     {session.changes.map((change) => (
                       <Item role="listitem" size="xs" key={change.file}>
@@ -598,21 +626,26 @@ export function CanvasWorkspace({
     <div className="flex h-full min-h-0 flex-col bg-muted/20">
       <header className="flex min-h-12 items-center gap-3 border-b bg-background px-3">
         <form className="w-full max-w-xs" onSubmit={onRouteSubmit}>
-          <InputGroup>
-            <InputGroupInput
-              aria-label="Canvas route"
-              disabled={!canvasReady}
-              value={routeDraft}
-              spellCheck={false}
-              onChange={(event) => onRouteDraftChange(event.target.value)}
-            />
-            <InputGroupAddon><RouteIcon /></InputGroupAddon>
-            <InputGroupAddon align="inline-end">
-              <InputGroupButton aria-label="Open route" disabled={!canvasReady} size="icon-xs" type="submit">
-                <ArrowRightIcon />
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="canvas-route" className="sr-only">Canvas route</FieldLabel>
+              <InputGroup>
+                <InputGroupAddon><RouteIcon /></InputGroupAddon>
+                <InputGroupInput
+                  id="canvas-route"
+                  disabled={!canvasReady}
+                  value={routeDraft}
+                  spellCheck={false}
+                  onChange={(event) => onRouteDraftChange(event.target.value)}
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton aria-label="Open route" disabled={!canvasReady} size="icon-xs" type="submit">
+                    <ArrowRightIcon />
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
+            </Field>
+          </FieldGroup>
         </form>
         <div className="flex flex-1 justify-center">
           <ToggleGroup

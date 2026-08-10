@@ -24,7 +24,7 @@ const session = new SessionManager(
 
 function applyCommonHeaders(response: ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", STUDIO_ORIGIN);
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Larger-Capability");
   response.setHeader("Cache-Control", "no-store");
 }
@@ -69,7 +69,7 @@ const server = createServer(async (request, response) => {
   }
 
   try {
-    if (request.method === "GET" && url.pathname === "/api/health") {
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/api/health") {
       sendJson(response, 200, { ok: true, project: manifest.project.name, capability: API_CAPABILITY });
       return;
     }

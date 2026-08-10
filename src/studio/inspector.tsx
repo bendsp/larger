@@ -6,7 +6,13 @@ import {
   ServerIcon,
 } from "lucide-react";
 import type { SessionSnapshot } from "@/contracts";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -16,19 +22,38 @@ import {
 } from "@/components/ui/empty";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
+import { cn } from "@/lib/utils";
 import type { StudioSelection, Workspace } from "./types";
 import { phaseLabel } from "./status";
 import { formatBytes } from "./format";
 
 function Property({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex flex-col gap-1 py-2 text-xs">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd
-        className={`m-0 min-w-0 text-left ${mono ? "overflow-x-auto whitespace-nowrap font-mono" : "break-words"}`}
-        title={value}
-      >{value}</dd>
-    </div>
+    <Item role="listitem" size="xs" className="flex-col items-stretch gap-1 rounded-none px-0">
+      <ItemContent>
+        <ItemDescription>{label}</ItemDescription>
+      </ItemContent>
+      <ItemActions className="min-w-0 max-w-full justify-start">
+        <span
+          className={cn(
+            "min-w-0 text-left text-xs",
+            mono ? "overflow-x-auto whitespace-nowrap font-mono" : "break-words",
+          )}
+          title={value}
+        >
+          {value}
+        </span>
+      </ItemActions>
+    </Item>
   );
 }
 
@@ -36,8 +61,30 @@ function InspectorSection({ title, children }: { title: string; children: React.
   return (
     <section className="flex flex-col gap-1 px-4 py-3">
       <h3 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</h3>
-      <dl className="m-0 divide-y">{children}</dl>
+      <ItemGroup className="gap-0">{children}</ItemGroup>
     </section>
+  );
+}
+
+function SelectionSummary({
+  icon: Icon,
+  title,
+  description,
+  mono = false,
+}: {
+  icon: typeof ComponentIcon;
+  title: string;
+  description: string;
+  mono?: boolean;
+}) {
+  return (
+    <Item size="sm" className="rounded-none p-4">
+      <ItemMedia variant="icon"><Icon /></ItemMedia>
+      <ItemContent className="min-w-0">
+        <ItemTitle className={cn("truncate", mono && "font-mono")}>{title}</ItemTitle>
+        <ItemDescription>{description}</ItemDescription>
+      </ItemContent>
+    </Item>
   );
 }
 
@@ -80,13 +127,7 @@ export function Inspector({
           <ScrollArea className="h-full">
             {selection.kind === "component" && (
               <>
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex size-9 items-center justify-center rounded-lg border bg-muted/40"><ComponentIcon className="size-4" /></div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{selection.value.name}</p>
-                    <p className="text-xs text-muted-foreground">React component</p>
-                  </div>
-                </div>
+                <SelectionSummary icon={ComponentIcon} title={selection.value.name} description="React component" />
                 <Separator />
                 <InspectorSection title="Source">
                   <Property label="Family" value={selection.value.family} />
@@ -98,11 +139,13 @@ export function Inspector({
             {selection.kind === "token" && (
               <>
                 <div className="p-4">
-                  <Card className="overflow-hidden p-0">
-                    <div className="h-24 border-b" style={{ background: selection.value.value }} />
-                    <CardContent className="p-3">
-                      <p className="truncate text-sm font-medium">{selection.value.name}</p>
-                      <p className="font-mono text-xs text-muted-foreground">{selection.value.value}</p>
+                  <Card size="sm">
+                    <CardHeader>
+                      <CardTitle className="truncate">{selection.value.name}</CardTitle>
+                      <CardDescription className="font-mono">{selection.value.value}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-20 rounded-lg border" style={{ background: selection.value.value }} />
                     </CardContent>
                   </Card>
                 </div>
@@ -119,11 +162,19 @@ export function Inspector({
             {selection.kind === "asset" && (
               <>
                 <div className="p-4">
-                  <div className="grid min-h-32 place-items-center overflow-hidden rounded-lg border bg-muted/40">
-                    {selection.value.previewUrl
-                      ? <img className="max-h-52 w-full object-contain" src={selection.value.previewUrl} alt="" />
-                      : <ImageIcon className="size-6 text-muted-foreground" />}
-                  </div>
+                  <Card size="sm">
+                    <CardHeader>
+                      <CardTitle className="truncate">{selection.value.name}</CardTitle>
+                      <CardDescription>{selection.value.kind}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid min-h-32 place-items-center overflow-hidden rounded-lg border bg-muted/40">
+                        {selection.value.previewUrl
+                          ? <img className="max-h-52 w-full object-contain" src={selection.value.previewUrl} alt="" />
+                          : <ImageIcon className="text-muted-foreground" />}
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
                 <Separator />
                 <InspectorSection title="Asset">
@@ -137,13 +188,7 @@ export function Inspector({
 
             {selection.kind === "route" && (
               <>
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex size-9 items-center justify-center rounded-lg border bg-muted/40"><RouteIcon className="size-4" /></div>
-                  <div className="min-w-0">
-                    <p className="truncate font-mono text-sm font-medium">{selection.value.path}</p>
-                    <p className="text-xs text-muted-foreground">Project route</p>
-                  </div>
-                </div>
+                <SelectionSummary icon={RouteIcon} title={selection.value.path} description="Project route" mono />
                 <Separator />
                 <InspectorSection title="Route">
                   <Property label="Path" value={selection.value.path} mono />
@@ -155,13 +200,7 @@ export function Inspector({
 
             {selection.kind === "server" && (
               <>
-                <div className="flex items-center gap-3 p-4">
-                  <div className="flex size-9 items-center justify-center rounded-lg border bg-muted/40"><ServerIcon className="size-4" /></div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">Project dev server</p>
-                    <p className="text-xs text-muted-foreground">Managed process</p>
-                  </div>
-                </div>
+                <SelectionSummary icon={ServerIcon} title="Project dev server" description="Managed process" />
                 <Separator />
                 <InspectorSection title="Runtime">
                   <Property label="Status" value={phaseLabel(session.phase)} />

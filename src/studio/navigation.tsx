@@ -1,4 +1,5 @@
 import {
+  CircleIcon,
   ComponentIcon,
   ImageIcon,
   MonitorPlayIcon,
@@ -19,9 +20,12 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import type { Workspace } from "./types";
 import { phaseLabel } from "./status";
+import { cn } from "@/lib/utils";
 
 interface NavigationItem {
   id: Workspace;
@@ -41,6 +45,7 @@ export function StudioNavigation({
   workspace: Workspace;
   onWorkspaceChange: (workspace: Workspace) => void;
 }) {
+  const { isMobile, setOpenMobile } = useSidebar();
   const library: NavigationItem[] = [
     { id: "components", label: "Components", icon: ComponentIcon, count: project ? `${project.components.length}${project.truncated.files ? "+" : ""}` : undefined },
     { id: "design-system", label: "Design system", icon: PaletteIcon, count: project ? `${project.brand.tokens.length}${project.truncated.css ? "+" : ""}` : undefined },
@@ -51,6 +56,11 @@ export function StudioNavigation({
     { id: "routes", label: "Routes", icon: RouteIcon, count: project ? `${project.routes.length}${project.truncated.files ? "+" : ""}` : undefined },
     { id: "servers", label: "Servers", icon: ServerIcon },
   ];
+  const selectWorkspace = (next: Workspace) => {
+    onWorkspaceChange(next);
+    if (isMobile) setOpenMobile(false);
+  };
+  const isTransitioning = !["idle", "ready", "error"].includes(phase);
 
   const renderGroup = (label: string, items: NavigationItem[]) => (
     <SidebarGroup>
@@ -64,7 +74,8 @@ export function StudioNavigation({
                 <SidebarMenuButton
                   aria-current={workspace === item.id ? "page" : undefined}
                   isActive={workspace === item.id}
-                  onClick={() => onWorkspaceChange(item.id)}
+                  onClick={() => selectWorkspace(item.id)}
+                  tooltip={item.label}
                 >
                   <Icon data-icon="inline-start" />
                   <span>{item.label}</span>
@@ -79,19 +90,35 @@ export function StudioNavigation({
   );
 
   return (
-    <Sidebar collapsible="none" className="w-full border-r-0">
+    <Sidebar collapsible="icon" className="top-12! bottom-auto! h-[calc(100svh-3rem)]!">
       <SidebarContent>
         {renderGroup("Library", library)}
         {renderGroup("Project", projectViews)}
       </SidebarContent>
-      <SidebarFooter className="p-3">
-        <div className="flex items-center rounded-lg border bg-background/50 px-3 py-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className={phase === "ready" ? "size-2 rounded-full bg-emerald-500" : "size-2 rounded-full bg-muted-foreground/40"} />
-            {phaseLabel(phase)}
-          </div>
-        </div>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<div role="status" tabIndex={0} aria-label={`Server status: ${phaseLabel(phase)}`} />}
+              tooltip={phaseLabel(phase)}
+            >
+              <CircleIcon
+                className={cn(
+                  phase === "ready"
+                    ? "fill-primary text-primary"
+                    : phase === "error"
+                      ? "fill-destructive text-destructive"
+                      : isTransitioning
+                        ? "fill-foreground text-foreground"
+                        : "fill-muted-foreground/40 text-muted-foreground/40",
+                )}
+              />
+              <span className="group-data-[collapsible=icon]:hidden">{phaseLabel(phase)}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }

@@ -14,7 +14,6 @@ import type {
   SessionSnapshot,
   SessionStartOptions,
 } from "@/contracts";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +21,8 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { toast } from "@/components/ui/toast";
 import { CanvasWorkspace, AssetsWorkspace, ComponentsWorkspace, DesignSystemWorkspace, RoutesWorkspace, ServersWorkspace } from "@/studio/workspaces";
 import { Inspector } from "@/studio/inspector";
 import { StudioNavigation } from "@/studio/navigation";
@@ -63,6 +63,14 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const body = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
   return body;
+}
+
+function reportError(error: unknown): void {
+  toast.add({
+    type: "error",
+    title: "Session error",
+    description: error instanceof Error ? error.message : String(error),
+  });
 }
 
 function useCanvasBounds(ref: RefObject<HTMLDivElement | null>, enabled: boolean) {
@@ -126,13 +134,13 @@ export function App() {
   const [routeDraft, setRouteDraft] = useState("/");
   const [currentUrl, setCurrentUrl] = useState<string | null>(null);
   const [serverAddress, setServerAddress] = useState("http://127.0.0.1:3000");
-  const [requestError, setRequestError] = useState<string | null>(null);
   const [apiReady, setApiReady] = useState(false);
   const [sessionConfigReady, setSessionConfigReady] = useState(false);
   const canvasMountRef = useRef<HTMLDivElement>(null);
   const loadedSurfaceRef = useRef<string | null>(null);
   const requestedRouteRef = useRef<string | null>(null);
   const serverAddressHydratedRef = useRef(false);
+  const lastSessionErrorRef = useRef<string | null>(null);
   const surfaceUrl = session.surface?.kind === "web-url" ? session.surface.url : null;
   const canvasReady = session.phase === "ready" && Boolean(surfaceUrl);
   const canvasVisible = workspace === "canvas" && canvasReady;
@@ -141,6 +149,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     let retry = 0;
+    let lastReportedError: string | null = null;
     const loadProject = async () => {
       try {
         const projectValue = await fetchJson<ProjectSummary>("/api/project");
@@ -149,11 +158,15 @@ export function App() {
           setRoute(projectValue.entryRoute);
           setRouteDraft(projectValue.entryRoute);
           setApiReady(true);
-          setRequestError(null);
+          lastReportedError = null;
         }
       } catch (error) {
         if (!cancelled) {
-          setRequestError(error instanceof Error ? error.message : String(error));
+          const message = error instanceof Error ? error.message : String(error);
+          if (message !== lastReportedError) {
+            reportError(error);
+            lastReportedError = message;
+          }
           retry = window.setTimeout(loadProject, 1_000);
         }
       }
@@ -167,6 +180,7 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let lastReportedError: string | null = null;
     const poll = async () => {
       try {
         const snapshot = await fetchJson<SessionSnapshot>("/api/session");
@@ -178,9 +192,16 @@ export function App() {
             serverAddressHydratedRef.current = true;
           }
           setSessionConfigReady(true);
+          lastReportedError = null;
         }
       } catch (error) {
-        if (!cancelled) setRequestError(error instanceof Error ? error.message : String(error));
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message !== lastReportedError) {
+            reportError(error);
+            lastReportedError = message;
+          }
+        }
       }
     };
     void poll();
@@ -205,13 +226,13 @@ export function App() {
       if (!requestedRoute) return;
       requestedRouteRef.current = null;
       const requestedUrl = new URL(requestedRoute, `${surfaceUrl}/`).toString();
-      void window.largerCanvas.navigate(requestedUrl).catch((error: Error) => setRequestError(error.message));
+      void window.largerCanvas.navigate(requestedUrl).catch(reportError);
       return;
     }
     requestedRouteRef.current = null;
     loadedSurfaceRef.current = surfaceUrl;
     const initialUrl = new URL(route, `${surfaceUrl}/`).toString();
-    void window.largerCanvas.load(initialUrl).catch((error: Error) => setRequestError(error.message));
+    void window.largerCanvas.load(initialUrl).catch(reportError);
   }, [canvasReady, route, surfaceUrl, workspace]);
 
   useEffect(() => window.largerCanvas?.onNavigation((url) => {
@@ -224,8 +245,17 @@ export function App() {
     setRouteDraft(relative);
   }), [surfaceUrl]);
 
+  useEffect(() => {
+    if (!session.error) {
+      lastSessionErrorRef.current = null;
+      return;
+    }
+    if (lastSessionErrorRef.current === session.error) return;
+    lastSessionErrorRef.current = session.error;
+    reportError(session.error);
+  }, [session.error]);
+
   const start = useCallback(async () => {
-    setRequestError(null);
     try {
       if (!sessionConfigReady) throw new Error("Server configuration is still loading");
       const options = parseServerAddress(serverAddress);
@@ -241,7 +271,7 @@ export function App() {
       });
       setSession(snapshot);
     } catch (error) {
-      setRequestError(error instanceof Error ? error.message : String(error));
+      reportError(error);
     }
   }, [serverAddress, sessionConfigReady]);
 
@@ -258,7 +288,7 @@ export function App() {
         headers: { "X-Larger-Capability": health.capability },
       }));
     } catch (error) {
-      setRequestError(error instanceof Error ? error.message : String(error));
+      reportError(error);
     }
   }, []);
 
@@ -310,7 +340,7 @@ export function App() {
         onReload={() => {
           if (!surfaceUrl || !window.largerCanvas) return;
           const url = currentUrl ?? new URL(route, `${surfaceUrl}/`).toString();
-          void window.largerCanvas.navigate(url).catch((error: Error) => setRequestError(error.message));
+          void window.largerCanvas.navigate(url).catch(reportError);
         }}
         canStart={Boolean(project && apiReady && sessionConfigReady)}
         onStart={start}
@@ -325,65 +355,57 @@ export function App() {
 
   return (
     <main className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-foreground">
-      <header className="app-drag flex min-h-12 items-center border-b bg-background px-4 pl-20">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold tracking-tight">Larger</span>
-          <span className="text-xs text-muted-foreground">/</span>
-          <span className="max-w-64 truncate text-xs text-muted-foreground">{project?.name ?? "reading project"}</span>
-        </div>
-        <div className="ml-auto flex items-center gap-2 app-no-drag">
-          {project && (
-            <Badge variant="outline" className="max-w-48 gap-1.5 font-mono text-[10px]">
-              <GitBranchIcon className="size-3" />{project.git.branch}
-            </Badge>
-          )}
-          {isRunning || isStarting || session.phase === "stopping" ? (
-            <Button size="sm" variant="outline" disabled={session.phase === "stopping"} onClick={stop}>
-              <CircleStopIcon data-icon="inline-start" />
-              {session.phase === "stopping" ? "Stopping" : isStarting ? "Cancel" : "Stop"}
-            </Button>
-          ) : (
-            <Button size="sm" disabled={!project || !apiReady || !sessionConfigReady || isBusy} onClick={start}>
-              <PlayIcon data-icon="inline-start" />{isBusy ? "Starting" : "Start"}
-            </Button>
-          )}
-        </div>
-      </header>
-
       <SidebarProvider
-        keyboardShortcut={false}
-        className="min-h-0 flex-1"
-        style={{ "--sidebar-width": "100%" } as CSSProperties}
+        className="min-h-0 flex-1 flex-col"
+        style={{
+          "--sidebar-width": "16rem",
+          "--sidebar-width-icon": "3rem",
+        } as CSSProperties}
       >
-        <ResizablePanelGroup
-          id="studio-layout"
-          orientation="horizontal"
-          resizeTargetMinimumSize={{ coarse: 28, fine: 12 }}
-          className="min-h-0"
-        >
-          <ResizablePanel id="navigation" defaultSize="18%" minSize={210} maxSize={360} groupResizeBehavior="preserve-pixel-size">
-            <StudioNavigation project={project} phase={session.phase} workspace={workspace} onWorkspaceChange={changeWorkspace} />
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel id="workspace" defaultSize="61%" minSize={520}>
-            <section className="h-full min-h-0 bg-background">{renderWorkspace()}</section>
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel id="inspector" defaultSize="21%" minSize={250} maxSize={420} groupResizeBehavior="preserve-pixel-size">
-            <Inspector workspace={workspace} selection={selection} session={session} />
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </SidebarProvider>
+        <header className="app-drag flex min-h-12 items-center border-b bg-background px-4 pl-20">
+          <div className="app-no-drag flex items-center gap-2">
+            <SidebarTrigger />
+            <span className="text-sm font-semibold tracking-tight">Larger</span>
+            <span className="text-xs text-muted-foreground">/</span>
+            <span className="max-w-64 truncate text-xs text-muted-foreground">{project?.name ?? "reading project"}</span>
+          </div>
+          <div className="ml-auto flex items-center gap-2 app-no-drag">
+            {project && (
+              <Badge variant="outline" className="max-w-48 gap-1.5 font-mono text-[10px]">
+                <GitBranchIcon data-icon="inline-start" />{project.git.branch}
+              </Badge>
+            )}
+            {isRunning || isStarting || session.phase === "stopping" ? (
+              <Button size="sm" variant="outline" disabled={session.phase === "stopping"} onClick={stop}>
+                <CircleStopIcon data-icon="inline-start" />
+                {session.phase === "stopping" ? "Stopping" : isStarting ? "Cancel" : "Stop"}
+              </Button>
+            ) : (
+              <Button size="sm" disabled={!project || !apiReady || !sessionConfigReady || isBusy} onClick={start}>
+                <PlayIcon data-icon="inline-start" />{isBusy ? "Starting" : "Start"}
+              </Button>
+            )}
+          </div>
+        </header>
 
-      {(requestError || session.error) && (
-        <div className="fixed right-4 bottom-4 z-50 w-[min(420px,calc(100vw-2rem))]">
-          <Alert variant="destructive" className="bg-background shadow-xl">
-            <AlertTitle>Session error</AlertTitle>
-            <AlertDescription>{requestError ?? session.error}</AlertDescription>
-            <AlertAction><Button size="xs" variant="ghost" onClick={() => setRequestError(null)}>Dismiss</Button></AlertAction>
-          </Alert>
+        <div className="flex min-h-0 flex-1">
+          <StudioNavigation project={project} phase={session.phase} workspace={workspace} onWorkspaceChange={changeWorkspace} />
+          <ResizablePanelGroup
+            id="studio-layout"
+            orientation="horizontal"
+            resizeTargetMinimumSize={{ coarse: 28, fine: 12 }}
+            className="min-h-0"
+          >
+            <ResizablePanel id="workspace" defaultSize="74%" minSize={520}>
+              <section className="h-full min-h-0 bg-background">{renderWorkspace()}</section>
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel id="inspector" defaultSize="26%" minSize={250} maxSize={420} groupResizeBehavior="preserve-pixel-size">
+              <Inspector workspace={workspace} selection={selection} session={session} />
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </div>
-      )}
+      </SidebarProvider>
     </main>
   );
 }
