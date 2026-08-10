@@ -39,7 +39,7 @@
           "additionalProperties": false,
           "required": ["adapter", "mode"],
           "properties": {
-            "adapter": { "const": "react-rewrite" },
+            "adapter": { "type": "string", "minLength": 1 },
             "mode": { "const": "sandbox" }
           }
         }

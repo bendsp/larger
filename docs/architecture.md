@@ -1,24 +1,19 @@
 # Architecture
 
-React Rewrite is isolated behind a canvas engine interface.
+Larger owns projects, working copies, sessions, and interface state. Editor integrations sit behind a registered adapter boundary.
 
 ```ts
-interface CanvasEngine {
-  readonly id: string;
-  readonly version: string;
+interface EditorAdapter {
+  readonly descriptor: EditorAdapterDescriptor;
   start(input: {
-    projectRoot: string;
-    host: string;
-    port: number;
-  }): Promise<{
-    proxyUrl: string;
-    websocketUrl: string | null;
-  }>;
+    workspaceRoot: string;
+    target: { url: string };
+  }): Promise<EditorSurface>;
   stop(): Promise<void>;
 }
 ```
 
-The adapter launches the installed React Rewrite binary from the disposable working copy and parses its proxy URLs. The renderer only consumes the session contract.
+The descriptor normalizes compatibility, client limits, and who controls each capability: the Larger studio, the embedded editor UI, or nobody. A session exposes an abstract surface instead of React Rewrite proxy details.
 
 ```text
 Electron main
@@ -31,7 +26,8 @@ Local API
   ├── sandbox copier / change detector
   └── session manager
         ├── target dev-server process
-        └── CanvasEngine process
+        └── EditorAdapter
+              └── React Rewrite process
 
 React renderer
   ├── project views
@@ -39,7 +35,13 @@ React renderer
   └── session state
 ```
 
-The native canvas view is required because React Rewrite does not run its overlay inside an iframe.
+## Dependency direction
+
+`SessionManager` depends only on `EditorAdapter`. The adapter registry selects an implementation from the manifest. React Rewrite package discovery, arguments, stdout parsing, endpoint readiness, process quirks, and capability declarations live together in `server/adapters/react-rewrite.ts`.
+
+The renderer consumes only `SessionSnapshot.adapter` and `SessionSnapshot.surface`; it never sees React Rewrite proxy or WebSocket fields. Updating React Rewrite should therefore be an adapter-and-contract-test change. Supporting another web or native editor adds an adapter and, only when necessary, a new surface renderer.
+
+The current React Rewrite adapter reports editing as `embedded` because the upstream overlay owns selection and edits. A future headless adapter can report those same capabilities as `studio` without changing project or session data.
 
 ## Trust boundary
 

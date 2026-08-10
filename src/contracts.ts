@@ -13,7 +13,7 @@ export interface ProjectManifest {
       preferredPort: number;
     };
     engine: {
-      adapter: "react-rewrite";
+      adapter: string;
       mode: "sandbox";
     };
   };
@@ -87,15 +87,44 @@ export type SessionPhase =
   | "idle"
   | "preparing"
   | "starting-target"
-  | "starting-engine"
+  | "starting-adapter"
   | "ready"
   | "stopping"
   | "error";
 
 export interface SessionLog {
   at: number;
-  source: "studio" | "target" | "engine";
+  source: "studio" | "target" | "adapter";
   message: string;
+}
+
+export type EditorCapabilityControl = "studio" | "embedded" | "unavailable";
+
+export interface EditorCapabilities {
+  selection: EditorCapabilityControl;
+  sourceNavigation: EditorCapabilityControl;
+  textEditing: EditorCapabilityControl;
+  styleEditing: EditorCapabilityControl;
+  layoutEditing: EditorCapabilityControl;
+  history: EditorCapabilityControl;
+}
+
+export interface EditorAdapterDescriptor {
+  id: string;
+  name: string;
+  version: string;
+  supports: {
+    platforms: Array<"web" | "native">;
+    runtimes: string[];
+  };
+  capabilities: EditorCapabilities;
+  maxClients: number | null;
+}
+
+export interface EditorSurface {
+  kind: "web-url";
+  url: string;
+  embedding: "native-view" | "document" | "external";
 }
 
 export interface SandboxChange {
@@ -103,10 +132,22 @@ export interface SandboxChange {
   status: "modified" | "added" | "deleted";
 }
 
+export interface SessionStartOptions {
+  host?: "127.0.0.1" | "localhost";
+  preferredPort?: number;
+}
+
+export interface ManagedServerSnapshot {
+  mode: "managed";
+  configured: ProjectManifest["project"]["dev"];
+  activeUrl: string | null;
+}
+
 export interface SessionSnapshot {
   phase: SessionPhase;
-  proxyUrl: string | null;
-  engineVersion: string;
+  adapter: EditorAdapterDescriptor;
+  server: ManagedServerSnapshot;
+  surface: EditorSurface | null;
   error: string | null;
   logs: SessionLog[];
   changes: SandboxChange[];

@@ -159,7 +159,9 @@ ipcMain.on("canvas:bounds", (event, bounds) => {
   } catch {
     return;
   }
-  if (!mainWindow || !canvasView || !canvasAttached) return;
+  if (!mainWindow || !canvasView) return;
+  if (!canvasAttached && allowedCanvasOrigin) attachCanvas();
+  if (!canvasAttached) return;
   const windowBounds = mainWindow.getContentBounds();
   /** @param {unknown} value */
   const numberOrZero = (value) => {

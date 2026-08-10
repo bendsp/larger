@@ -31,7 +31,8 @@ export async function readManifest(): Promise<ProjectManifest> {
     (project.dev?.preferredPort ?? 0) > 65_535 ||
     (entryRoute !== undefined &&
       (typeof entryRoute !== "string" || !entryRoute.startsWith("/") || entryRoute.startsWith("//"))) ||
-    project.engine?.adapter !== "react-rewrite" ||
+    typeof project.engine?.adapter !== "string" ||
+    project.engine.adapter.trim().length === 0 ||
     project.engine.mode !== "sandbox"
   ) {
     throw new Error("larger.project.json is missing a required project field");

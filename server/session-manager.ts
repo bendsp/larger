@@ -1,9 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
-import type { ProjectManifest, SessionLog, SessionSnapshot } from "../src/contracts.js";
-import { ReactRewriteEngine, stripAnsi, terminateProcess } from "./canvas-engine.js";
+import type {
+  EditorSurface,
+  ProjectManifest,
+  SessionLog,
+  SessionSnapshot,
+  SessionStartOptions,
+} from "../src/contracts.js";
+import type { EditorAdapter, EditorAdapterFactory, EditorAdapterEvent } from "./editor-adapter.js";
 import { STUDIO_ROOT } from "./manifest.js";
+import { stripAnsi, terminateProcess } from "./process.js";
 import { createSandbox, inspectSandboxChanges, type SandboxBaseline } from "./sandbox.js";
 
 function slugify(value: string): string {
@@ -23,6 +30,21 @@ async function findAvailablePort(preferredPort: number, host: string): Promise<n
     if (await isPortAvailable(port, host)) return port;
   }
   throw new Error(`No available target port near ${preferredPort}`);
+}
+
+export function resolveServerLaunch(
+  configured: ProjectManifest["project"]["dev"],
+  options: SessionStartOptions = {},
+): ProjectManifest["project"]["dev"] {
+  const host = options.host ?? configured.host;
+  const preferredPort = options.preferredPort ?? configured.preferredPort;
+  if (!["127.0.0.1", "localhost"].includes(host)) {
+    throw new Error("Server host must be localhost or 127.0.0.1");
+  }
+  if (!Number.isInteger(preferredPort) || preferredPort < 1024 || preferredPort > 65_535) {
+    throw new Error("Server port must be an integer between 1024 and 65535");
+  }
+  return { ...configured, host, preferredPort };
 }
 
 async function waitForHttp(
@@ -48,10 +70,10 @@ async function waitForHttp(
 
 export class SessionManager {
   private targetProcess: ChildProcess | null = null;
-  private readonly engine: ReactRewriteEngine;
+  private readonly adapter: EditorAdapter;
   private phase: SessionSnapshot["phase"] = "idle";
   private targetUrl: string | null = null;
-  private proxyUrl: string | null = null;
+  private surface: EditorSurface | null = null;
   private runtimeRoot: string | null = null;
   private error: string | null = null;
   private logs: SessionLog[] = [];
@@ -63,32 +85,36 @@ export class SessionManager {
   private startPromise: Promise<SessionSnapshot> | null = null;
   private cleanupPromise: Promise<void> | null = null;
   private cleanupError: string | null = null;
-  private engineGeneration: number | null = null;
+  private adapterGeneration: number | null = null;
 
   constructor(
     private readonly manifest: ProjectManifest,
     private readonly sourceRoot: string,
+    createAdapter: EditorAdapterFactory,
   ) {
-    this.engine = new ReactRewriteEngine(
-      (message) => this.addLog("engine", message),
-      (code, signal) => {
-        if (this.engineGeneration !== null) {
-          this.handleUnexpectedExit("engine", code, signal, this.engineGeneration);
-        }
-      },
-    );
+    this.adapter = createAdapter((event) => this.handleAdapterEvent(event));
+  }
+
+  private handleAdapterEvent(event: EditorAdapterEvent): void {
+    if (event.type === "log") {
+      this.addLog("adapter", event.message);
+      return;
+    }
+    if (this.adapterGeneration !== null) {
+      this.handleUnexpectedExit("adapter", event.code, event.signal, this.adapterGeneration);
+    }
   }
 
   private handleUnexpectedExit(
-    source: "target" | "engine",
+    source: "target" | "adapter",
     code: number | null,
-    signal: NodeJS.Signals | null,
+    signal: string | null,
     generation: number,
   ): void {
     if (generation !== this.generation || ["idle", "stopping", "error"].includes(this.phase)) return;
     this.generation += 1;
     const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
-    this.error = `${source === "engine" ? "React Rewrite" : "Target dev server"} exited unexpectedly (${detail})`;
+    this.error = `${source === "adapter" ? this.adapter.descriptor.name : "Target dev server"} exited unexpectedly (${detail})`;
     this.phase = "error";
     this.addLog("studio", this.error);
     void this.stopProcesses().catch((cleanupError) => {
@@ -108,7 +134,7 @@ export class SessionManager {
     if (generation !== this.generation) throw new Error("Session start was cancelled");
   }
 
-  async start(): Promise<SessionSnapshot> {
+  async start(options: SessionStartOptions = {}): Promise<SessionSnapshot> {
     if (this.cleanupPromise) {
       try {
         await this.cleanupPromise;
@@ -120,7 +146,7 @@ export class SessionManager {
     if (this.startPromise) return await this.startPromise;
     if (!["idle", "error"].includes(this.phase)) return this.snapshot();
 
-    const operation = this.startInternal();
+    const operation = this.startInternal(resolveServerLaunch(this.manifest.project.dev, options));
     this.startPromise = operation;
     try {
       return await operation;
@@ -129,7 +155,7 @@ export class SessionManager {
     }
   }
 
-  private async startInternal(): Promise<SessionSnapshot> {
+  private async startInternal(dev: ProjectManifest["project"]["dev"]): Promise<SessionSnapshot> {
     const generation = ++this.generation;
     this.error = null;
     this.logs = [];
@@ -149,10 +175,10 @@ export class SessionManager {
       this.assertActiveGeneration(generation);
       this.addLog("studio", `Sandbox ready at ${this.runtimeRoot}`);
 
-      const port = await findAvailablePort(project.dev.preferredPort, project.dev.host);
+      const port = await findAvailablePort(dev.preferredPort, dev.host);
       this.assertActiveGeneration(generation);
-      this.targetUrl = `http://${project.dev.host}:${port}`;
-      const [command, ...configuredArgs] = project.dev.command;
+      this.targetUrl = `http://${dev.host}:${port}`;
+      const [command, ...configuredArgs] = dev.command;
       const args = configuredArgs.map((argument) => argument.replaceAll("{port}", String(port)));
       this.phase = "starting-target";
       this.addLog("studio", `Starting target on ${this.targetUrl}`);
@@ -185,16 +211,15 @@ export class SessionManager {
 
       await waitForHttp(this.targetUrl, 60_000, () => generation !== this.generation);
       this.assertActiveGeneration(generation);
-      this.addLog("studio", "Target responded; handing the origin to React Rewrite");
-      this.phase = "starting-engine";
-      this.engineGeneration = generation;
-      const engineSession = await this.engine.start({
-        projectRoot: this.runtimeRoot,
-        host: project.dev.host,
-        port,
+      this.addLog("studio", `Target responded; starting ${this.adapter.descriptor.name}`);
+      this.phase = "starting-adapter";
+      this.adapterGeneration = generation;
+      const surface = await this.adapter.start({
+        workspaceRoot: this.runtimeRoot,
+        target: { url: this.targetUrl },
       });
       this.assertActiveGeneration(generation);
-      this.proxyUrl = engineSession.proxyUrl;
+      this.surface = surface;
       this.phase = "ready";
       this.addLog("studio", "Canvas ready");
       return await this.snapshot();
@@ -220,10 +245,10 @@ export class SessionManager {
   }
 
   private async performStopProcesses(): Promise<void> {
-    this.engineGeneration = null;
+    this.adapterGeneration = null;
     const target = this.targetProcess;
-    const [engineResult, targetResult] = await Promise.allSettled([
-      this.engine.stop(),
+    const [adapterResult, targetResult] = await Promise.allSettled([
+      this.adapter.stop(),
       terminateProcess(target),
     ]);
     if (targetResult.status === "fulfilled" && targetResult.value && this.targetProcess === target) {
@@ -231,7 +256,7 @@ export class SessionManager {
     }
 
     const errors: string[] = [];
-    if (engineResult.status === "rejected") errors.push(String(engineResult.reason));
+    if (adapterResult.status === "rejected") errors.push(String(adapterResult.reason));
     if (targetResult.status === "rejected") errors.push(String(targetResult.reason));
     if (targetResult.status === "fulfilled" && !targetResult.value) {
       errors.push("Target process did not exit after SIGKILL");
@@ -261,7 +286,7 @@ export class SessionManager {
     }
     this.phase = "idle";
     this.targetUrl = null;
-    this.proxyUrl = null;
+    this.surface = null;
     this.error = null;
     return await this.snapshot();
   }
@@ -280,8 +305,13 @@ export class SessionManager {
 
     return {
       phase: this.phase,
-      proxyUrl: this.proxyUrl,
-      engineVersion: this.engine.version,
+      adapter: this.adapter.descriptor,
+      server: {
+        mode: "managed",
+        configured: { ...this.manifest.project.dev, command: [...this.manifest.project.dev.command] },
+        activeUrl: this.targetUrl,
+      },
+      surface: this.surface,
       error: this.error,
       logs: [...this.logs],
       changes: [...this.cachedChanges],

@@ -1,41 +1,47 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { createRequire } from "node:module";
+import path from "node:path";
+import type { EditorAdapterDescriptor, EditorSurface } from "../../src/contracts.js";
+import type {
+  EditorAdapter,
+  EditorAdapterEventHandler,
+  EditorStartInput,
+} from "../editor-adapter.js";
+import { stripAnsi, terminateProcess } from "../process.js";
 
-export interface CanvasStartInput {
-  projectRoot: string;
-  host: string;
-  port: number;
-}
-
-export interface CanvasEngineSession {
+interface ReactRewriteEndpoints {
   proxyUrl: string;
-  websocketUrl: string | null;
+  websocketUrl: string;
 }
 
-export interface CanvasEngine {
-  readonly id: string;
-  readonly version: string;
-  start(input: CanvasStartInput): Promise<CanvasEngineSession>;
-  stop(): Promise<void>;
-}
-
-type LogHandler = (message: string) => void;
-
-const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
 const require = createRequire(import.meta.url);
-const reactRewritePackagePath = require.resolve("react-rewrite-cli/package.json");
-const reactRewritePackage = JSON.parse(readFileSync(reactRewritePackagePath, "utf8")) as {
+const packagePath = require.resolve("react-rewrite-cli/package.json");
+const packageMetadata = JSON.parse(readFileSync(packagePath, "utf8")) as {
   version: string;
   bin: Record<string, string>;
 };
 
-export function stripAnsi(value: string): string {
-  return value.replace(ANSI_PATTERN, "");
-}
+export const REACT_REWRITE_DESCRIPTOR: EditorAdapterDescriptor = {
+  id: "react-rewrite",
+  name: "React Rewrite",
+  version: packageMetadata.version,
+  supports: {
+    platforms: ["web"],
+    runtimes: ["react"],
+  },
+  capabilities: {
+    selection: "embedded",
+    sourceNavigation: "embedded",
+    textEditing: "embedded",
+    styleEditing: "embedded",
+    layoutEditing: "embedded",
+    history: "embedded",
+  },
+  maxClients: 1,
+};
 
-export function parseReactRewriteOutput(value: string): Partial<CanvasEngineSession> {
+export function parseReactRewriteOutput(value: string): Partial<ReactRewriteEndpoints> {
   const clean = stripAnsi(value);
   const proxy = clean.match(/Proxy:\s+(https?:\/\/[^\s]+)/)?.[1];
   const websocket = clean.match(/WebSocket:\s+(wss?:\/\/[^\s]+)/)?.[1];
@@ -61,85 +67,46 @@ export class LineBuffer {
   }
 }
 
-async function terminateProcess(child: ChildProcess | null): Promise<boolean> {
-  if (!child?.pid || child.exitCode !== null) return true;
-  const exitPromise = new Promise<boolean>((resolve) => child.once("exit", () => resolve(true)));
-  try {
-    if (process.platform === "win32") {
-      child.kill("SIGTERM");
-    } else {
-      process.kill(-child.pid, "SIGTERM");
-    }
-  } catch {
-    child.kill("SIGTERM");
-  }
-
-  const exited = await Promise.race([
-    exitPromise,
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
-  ]);
-  if (exited || child.exitCode !== null || !child.pid) return true;
-
-  try {
-    if (process.platform === "win32") {
-      child.kill("SIGKILL");
-    } else {
-      process.kill(-child.pid, "SIGKILL");
-    }
-  } catch {
-    child.kill("SIGKILL");
-  }
-  const killed = await Promise.race([
-    exitPromise,
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
-  ]);
-  return killed || child.exitCode !== null;
-}
-
-export class ReactRewriteEngine implements CanvasEngine {
-  readonly id = "react-rewrite";
-  readonly version = reactRewritePackage.version;
+export class ReactRewriteAdapter implements EditorAdapter {
+  readonly descriptor = REACT_REWRITE_DESCRIPTOR;
   private child: ChildProcess | null = null;
   private stopping = false;
 
-  constructor(
-    private readonly onLog: LogHandler,
-    private readonly onExit: (code: number | null, signal: NodeJS.Signals | null) => void,
-  ) {}
+  constructor(private readonly emit: EditorAdapterEventHandler) {}
 
-  async start(input: CanvasStartInput): Promise<CanvasEngineSession> {
+  async start(input: EditorStartInput): Promise<EditorSurface> {
     if (this.child) throw new Error("React Rewrite is already running");
 
-    const binary = path.resolve(
-      path.dirname(reactRewritePackagePath),
-      reactRewritePackage.bin["react-rewrite"],
-    );
-    const args = [binary, String(input.port), "--host", input.host, "--no-open"];
-
+    const target = new URL(input.target.url);
+    if (target.protocol !== "http:" || !target.port) {
+      throw new Error("React Rewrite requires an HTTP target with an explicit port");
+    }
+    const binary = path.resolve(path.dirname(packagePath), packageMetadata.bin["react-rewrite"]);
+    const args = [binary, target.port, "--host", target.hostname, "--no-open"];
     const child = spawn(process.execPath, args, {
-      cwd: input.projectRoot,
+      cwd: input.workspaceRoot,
       env: { ...process.env, FORCE_COLOR: "0", LOG_LEVEL: "info" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
     this.child = child;
 
-    return await new Promise<CanvasEngineSession>((resolve, reject) => {
+    const endpoints = await new Promise<ReactRewriteEndpoints>((resolve, reject) => {
       let settled = false;
       let proxyUrl: string | undefined;
-      let websocketUrl: string | null = null;
+      let websocketUrl: string | undefined;
       const stdoutBuffer = new LineBuffer();
       const stderrBuffer = new LineBuffer();
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
-        reject(new Error("React Rewrite did not publish a proxy URL within 30 seconds"));
+        reject(new Error("React Rewrite did not publish its endpoints within 30 seconds"));
       }, 30_000);
 
       const consumeLine = (value: string) => {
         const message = value.trim();
         if (!message) return;
-        this.onLog(message);
+        this.emit({ type: "log", message });
         const parsed = parseReactRewriteOutput(message);
         proxyUrl = parsed.proxyUrl ?? proxyUrl;
         websocketUrl = parsed.websocketUrl ?? websocketUrl;
@@ -174,9 +141,17 @@ export class ReactRewriteEngine implements CanvasEngine {
           reject(new Error(`React Rewrite exited before it was ready (code ${code ?? "unknown"})`));
           return;
         }
-        if (isCurrent && !this.stopping) this.onExit(code, signal);
+        if (isCurrent && !this.stopping) {
+          this.emit({ type: "exit", code, signal });
+        }
       });
     });
+
+    return {
+      kind: "web-url",
+      url: endpoints.proxyUrl,
+      embedding: "native-view",
+    };
   }
 
   async stop(): Promise<void> {
@@ -191,5 +166,3 @@ export class ReactRewriteEngine implements CanvasEngine {
     }
   }
 }
-
-export { terminateProcess };

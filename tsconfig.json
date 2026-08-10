@@ -18,7 +18,11 @@
     "noUnusedParameters": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src", "server", "electron", "vite.config.ts"]
 }

@@ -1,95 +1,62 @@
 import {
+  type CSSProperties,
   type FormEvent,
-  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
+import { CircleStopIcon, GitBranchIcon, PlayIcon } from "lucide-react";
 import type {
-  BrandToken,
-  ProjectAsset,
+  EditorAdapterDescriptor,
   ProjectSummary,
-  SessionPhase,
   SessionSnapshot,
-} from "./contracts";
+  SessionStartOptions,
+} from "@/contracts";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { CanvasWorkspace, AssetsWorkspace, ComponentsWorkspace, DesignSystemWorkspace, RoutesWorkspace, ServersWorkspace } from "@/studio/workspaces";
+import { Inspector } from "@/studio/inspector";
+import { StudioNavigation } from "@/studio/navigation";
+import type { StudioSelection, Viewport, Workspace } from "@/studio/types";
 
-type Panel = "routes" | "components" | "assets" | "brand";
-type Viewport = "desktop" | "tablet" | "mobile";
+const EMPTY_ADAPTER: EditorAdapterDescriptor = {
+  id: "",
+  name: "Editor adapter",
+  version: "",
+  supports: { platforms: [], runtimes: [] },
+  capabilities: {
+    selection: "unavailable",
+    sourceNavigation: "unavailable",
+    textEditing: "unavailable",
+    styleEditing: "unavailable",
+    layoutEditing: "unavailable",
+    history: "unavailable",
+  },
+  maxClients: null,
+};
 
 const INITIAL_SESSION: SessionSnapshot = {
   phase: "idle",
-  proxyUrl: null,
-  engineVersion: "",
+  adapter: EMPTY_ADAPTER,
+  server: {
+    mode: "managed",
+    configured: { command: [], host: "127.0.0.1", preferredPort: 3000 },
+    activeUrl: null,
+  },
+  surface: null,
   error: null,
   logs: [],
   changes: [],
 };
-
-const PANELS: Array<{ id: Panel; label: string; glyph: GlyphName }> = [
-  { id: "routes", label: "Routes", glyph: "route" },
-  { id: "components", label: "Components", glyph: "component" },
-  { id: "assets", label: "Assets", glyph: "image" },
-  { id: "brand", label: "Brand", glyph: "palette" },
-];
-
-const VIEWPORTS: Record<Viewport, { label: string; width: number | null; glyph: GlyphName }> = {
-  desktop: { label: "Desktop", width: null, glyph: "desktop" },
-  tablet: { label: "Tablet", width: 820, glyph: "tablet" },
-  mobile: { label: "Mobile", width: 390, glyph: "mobile" },
-};
-
-type GlyphName =
-  | "arrow"
-  | "branch"
-  | "component"
-  | "desktop"
-  | "file"
-  | "image"
-  | "mobile"
-  | "palette"
-  | "play"
-  | "refresh"
-  | "route"
-  | "stop"
-  | "tablet";
-
-const GLYPHS: Record<GlyphName, ReactNode> = {
-  arrow: <path d="m9 18 6-6-6-6" />,
-  branch: <path d="M6 3v12a3 3 0 0 0 3 3h3m0 0-3-3m3 3-3 3M18 3v3a3 3 0 0 1-3 3H9m9-6-2 2m2-2 2 2" />,
-  component: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
-  desktop: <><rect x="3" y="4" width="18" height="13" rx="1.5" /><path d="M8 21h8m-4-4v4" /></>,
-  file: <><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v5h5" /></>,
-  image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 5" /></>,
-  mobile: <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4m-3 14h2" /></>,
-  palette: <><path d="M12 3a9 9 0 0 0 0 18h1.5a1.8 1.8 0 0 0 0-3.6h-1a1.6 1.6 0 0 1 0-3.2H15A6 6 0 0 0 21 8.5C21 5.5 17 3 12 3Z" /><circle cx="7.5" cy="10" r=".75" fill="currentColor" stroke="none" /><circle cx="10" cy="6.8" r=".75" fill="currentColor" stroke="none" /><circle cx="14" cy="6.5" r=".75" fill="currentColor" stroke="none" /></>,
-  play: <path d="m8 5 11 7-11 7Z" />,
-  refresh: <><path d="M20 7v5h-5" /><path d="M18.5 16A8 8 0 1 1 20 12" /></>,
-  route: <><circle cx="6" cy="5" r="2" /><circle cx="18" cy="19" r="2" /><path d="M6 7v5a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3v-1" /></>,
-  stop: <rect x="6" y="6" width="12" height="12" rx="1" />,
-  tablet: <><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M9 5h6m-4 14h2" /></>,
-};
-
-function Glyph({ name, size = 16 }: { name: GlyphName; size?: number }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className="glyph"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {GLYPHS[name]}
-    </svg>
-  );
-}
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -127,187 +94,45 @@ function useCanvasBounds(ref: RefObject<HTMLDivElement | null>, enabled: boolean
   }, [enabled, ref]);
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function phaseLabel(phase: SessionPhase): string {
-  const labels: Record<SessionPhase, string> = {
-    idle: "Not running",
-    preparing: "Copying sandbox",
-    "starting-target": "Starting project",
-    "starting-engine": "Starting canvas",
-    ready: "Running",
-    stopping: "Stopping",
-    error: "Error",
-  };
-  return labels[phase];
-}
-
-function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: ProjectSummary; onRoute: (route: string) => void }) {
-  if (panel === "routes") {
-    return (
-      <div className="panel-list">
-        <PanelIntro title="Routes" meta={`${project.routes.length}${project.truncated.files ? "+" : ""}`} />
-        {project.routes.map((route) => (
-          <button
-            className="route-row"
-            disabled={route.kind === "dynamic"}
-            key={route.file}
-            onClick={() => onRoute(route.path)}
-            title={route.kind === "dynamic" ? "Dynamic routes need fixture data" : `Open ${route.path}`}
-          >
-            <span className="route-path">{route.path}</span>
-            <span className="route-file">{route.file}</span>
-            <Glyph name="arrow" size={13} />
-          </button>
-        ))}
-      </div>
-    );
+function parseServerAddress(address: string): SessionStartOptions {
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    throw new Error("Enter a full local address such as http://127.0.0.1:3000");
   }
-
-  if (panel === "components") {
-    return (
-      <div className="panel-list">
-        <PanelIntro title="Components" meta={`${project.components.length}${project.truncated.files ? "+" : ""}`} />
-        {project.components.map((component) => (
-          <div className="component-row" key={component.file}>
-            <span className={`component-mark component-mark--${component.family}`} />
-            <span>
-              <strong>{component.name}</strong>
-              <small>{component.family} · {component.file}</small>
-            </span>
-          </div>
-        ))}
-      </div>
-    );
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname)) {
+    throw new Error("The managed server address must use HTTP on localhost or 127.0.0.1");
   }
-
-  if (panel === "assets") {
-    const previewAssets = project.assets.filter((asset) => asset.previewUrl);
-    return (
-      <div className="panel-list panel-list--assets">
-        <PanelIntro title="Assets" meta={`${project.assets.length}${project.truncated.assets ? "+" : ""}`} />
-        <div className="asset-grid">
-          {previewAssets.map((asset) => <AssetTile asset={asset} key={asset.path} />)}
-        </div>
-        <div className="asset-file-list">
-          {project.assets.filter((asset) => !asset.previewUrl).map((asset) => (
-            <div className="asset-file" key={asset.path}>
-              <Glyph name="file" size={14} />
-              <span><strong>{asset.name}</strong><small>{formatBytes(asset.bytes)}</small></span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+  const preferredPort = Number(url.port);
+  if (!Number.isInteger(preferredPort) || preferredPort < 1024 || preferredPort > 65_535) {
+    throw new Error("The managed server address needs a port between 1024 and 65535");
   }
-
-  const lightTokens = project.brand.tokens.filter((token) => token.mode === "light");
-  const darkTokens = project.brand.tokens.filter((token) => token.mode === "dark");
-  return (
-    <div className="panel-list panel-list--brand">
-      <PanelIntro title="Brand" meta={`${project.brand.tokens.length}${project.truncated.css ? "+" : ""} tokens`} />
-      <BrandMeta project={project} />
-      <TokenGroup label="Light" tokens={lightTokens} />
-      <TokenGroup label="Dark" tokens={darkTokens} />
-      <section className="brand-section">
-        <header><span>Typography</span><small>{project.brand.fonts.length}</small></header>
-        {project.brand.fonts.map((font) => (
-          <div className="font-card" key={font.family}>
-            <span className="font-sample">Ag</span>
-            <span>
-              <strong>{font.family}</strong>
-              <small>{font.weights?.length > 0 ? `${font.weights.join(" / ")} · ${font.source}` : font.source}</small>
-            </span>
-          </div>
-        ))}
-      </section>
-    </div>
-  );
-}
-
-function PanelIntro({ title, meta }: { title: string; meta: string }) {
-  return (
-    <header className="panel-intro">
-      <h2>{title}</h2>
-      <small>{meta}</small>
-    </header>
-  );
-}
-
-function AssetTile({ asset }: { asset: ProjectAsset }) {
-  return (
-    <figure className="asset-tile" title={asset.path}>
-      <div className="asset-preview">
-        <img src={asset.previewUrl ?? ""} alt="" loading="lazy" />
-      </div>
-      <figcaption><span>{asset.name}</span><small>{formatBytes(asset.bytes)}</small></figcaption>
-    </figure>
-  );
-}
-
-function BrandMeta({ project }: { project: ProjectSummary }) {
-  const { shadcn } = project.brand;
-  return (
-    <div className="brand-meta">
-      <div><span>Tailwind</span><strong>{project.brand.tailwindConfig ? "Configured" : "Not found"}</strong></div>
-      <div><span>shadcn</span><strong>{shadcn.detected ? `${shadcn.style ?? "Detected"} / ${shadcn.iconLibrary ?? "icons"}` : "Not found"}</strong></div>
-    </div>
-  );
-}
-
-function TokenGroup({ label, tokens }: { label: string; tokens: BrandToken[] }) {
-  if (tokens.length === 0) return null;
-  return (
-    <section className="brand-section">
-      <header><span>{label}</span><small>{tokens.length}</small></header>
-      <div className="token-list">
-        {tokens.map((token) => (
-          <div className="token-row" key={`${token.mode}-${token.name}-${token.value}`}>
-            <span className="token-swatch" style={{ background: token.value }} />
-            <span><strong>{token.name.replace(/^--/, "")}</strong><small>{token.value}</small></span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function EmptyStudio({ project, onStart }: { project: ProjectSummary | null; onStart: () => void }) {
-  return (
-    <div className="empty-studio">
-      <h2>{project?.name ?? "Loading project"}</h2>
-      <p className="empty-studio__copy">
-        {project
-          ? "Start the project to inspect and edit its running interface."
-          : "Reading project files…"}
-      </p>
-      <button className="primary-action primary-action--large" disabled={!project} onClick={onStart}>
-        <Glyph name="play" size={15} />
-        Start
-      </button>
-    </div>
-  );
+  if (url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("The managed server address cannot include a path, query, or fragment");
+  }
+  return { host: url.hostname as SessionStartOptions["host"], preferredPort };
 }
 
 export function App() {
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [session, setSession] = useState<SessionSnapshot>(INITIAL_SESSION);
-  const [panel, setPanel] = useState<Panel>("routes");
+  const [workspace, setWorkspace] = useState<Workspace>("components");
+  const [selection, setSelection] = useState<StudioSelection>(null);
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [route, setRoute] = useState("/");
   const [routeDraft, setRouteDraft] = useState("/");
-  const [currentUrl, setCurrentUrl] = useState<string | null>(null);
+  const [serverAddress, setServerAddress] = useState("http://127.0.0.1:3000");
   const [requestError, setRequestError] = useState<string | null>(null);
-  const [isStarting, setIsStarting] = useState(false);
   const [apiReady, setApiReady] = useState(false);
+  const [sessionConfigReady, setSessionConfigReady] = useState(false);
   const canvasMountRef = useRef<HTMLDivElement>(null);
-  const loadedProxyRef = useRef<string | null>(null);
-  const canvasReady = session.phase === "ready" && Boolean(session.proxyUrl);
-  useCanvasBounds(canvasMountRef, canvasReady);
+  const loadedSurfaceRef = useRef<string | null>(null);
+  const serverAddressHydratedRef = useRef(false);
+  const surfaceUrl = session.surface?.kind === "web-url" ? session.surface.url : null;
+  const canvasReady = session.phase === "ready" && Boolean(surfaceUrl);
+  const canvasVisible = workspace === "canvas" && canvasReady;
+  useCanvasBounds(canvasMountRef, canvasVisible);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,7 +166,15 @@ export function App() {
     const poll = async () => {
       try {
         const snapshot = await fetchJson<SessionSnapshot>("/api/session");
-        if (!cancelled) setSession(snapshot);
+        if (!cancelled) {
+          setSession(snapshot);
+          if (!serverAddressHydratedRef.current) {
+            const { host, preferredPort } = snapshot.server.configured;
+            setServerAddress(`http://${host}:${preferredPort}`);
+            serverAddressHydratedRef.current = true;
+          }
+          setSessionConfigReady(true);
+        }
       } catch (error) {
         if (!cancelled) setRequestError(error instanceof Error ? error.message : String(error));
       }
@@ -355,41 +188,46 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!canvasReady || !session.proxyUrl || !window.largerCanvas) {
+    if (workspace !== "canvas" || !canvasReady || !surfaceUrl || !window.largerCanvas) {
+      if (workspace !== "canvas") window.largerCanvas?.hide();
       if (!canvasReady) {
-        loadedProxyRef.current = null;
+        loadedSurfaceRef.current = null;
         window.largerCanvas?.hide();
       }
       return;
     }
-    if (loadedProxyRef.current === session.proxyUrl) return;
-    loadedProxyRef.current = session.proxyUrl;
-    const url = new URL(route, `${session.proxyUrl}/`).toString();
-    void window.largerCanvas.load(url).catch((error: Error) => setRequestError(error.message));
-  }, [canvasReady, route, session.proxyUrl]);
-
-  useEffect(() => window.largerCanvas?.onNavigation(setCurrentUrl), []);
+    const url = new URL(route, `${surfaceUrl}/`).toString();
+    const request = loadedSurfaceRef.current === surfaceUrl
+      ? window.largerCanvas.navigate(url)
+      : window.largerCanvas.load(url);
+    loadedSurfaceRef.current = surfaceUrl;
+    void request.catch((error: Error) => setRequestError(error.message));
+  }, [canvasReady, route, surfaceUrl, workspace]);
 
   const start = useCallback(async () => {
-    setIsStarting(true);
     setRequestError(null);
-    setSession((current) => ({ ...current, phase: "preparing", error: null }));
     try {
+      if (!sessionConfigReady) throw new Error("Server configuration is still loading");
+      const options = parseServerAddress(serverAddress);
+      setSession((current) => ({ ...current, phase: "preparing", error: null }));
       const health = await fetchJson<{ capability: string }>("/api/health");
-      setSession(await fetchJson<SessionSnapshot>("/api/session/start", {
+      const snapshot = await fetchJson<SessionSnapshot>("/api/session/start", {
         method: "POST",
-        headers: { "X-Larger-Capability": health.capability },
-      }));
+        headers: {
+          "Content-Type": "application/json",
+          "X-Larger-Capability": health.capability,
+        },
+        body: JSON.stringify(options),
+      });
+      setSession(snapshot);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsStarting(false);
     }
-  }, []);
+  }, [serverAddress, sessionConfigReady]);
 
   const stop = useCallback(async () => {
     window.largerCanvas?.hide();
-    loadedProxyRef.current = null;
+    loadedSurfaceRef.current = null;
     setSession((current) => ({ ...current, phase: "stopping" }));
     try {
       const health = await fetchJson<{ capability: string }>("/api/health");
@@ -402,184 +240,119 @@ export function App() {
     }
   }, []);
 
+  const changeWorkspace = useCallback((next: Workspace) => {
+    setWorkspace(next);
+    setSelection(next === "servers" ? { kind: "server" } : null);
+  }, []);
+
   const navigateToRoute = useCallback((nextRoute: string) => {
-    setRoute(nextRoute);
-    setRouteDraft(nextRoute);
-    if (!session.proxyUrl || !window.largerCanvas) return;
-    const url = new URL(nextRoute, `${session.proxyUrl}/`).toString();
-    void window.largerCanvas.navigate(url).catch((error: Error) => setRequestError(error.message));
-  }, [session.proxyUrl]);
+    const normalized = nextRoute.startsWith("/") ? nextRoute : `/${nextRoute}`;
+    setRoute(normalized);
+    setRouteDraft(normalized);
+    setWorkspace("canvas");
+    setSelection(null);
+  }, []);
 
   const submitRoute = (event: FormEvent) => {
     event.preventDefault();
-    navigateToRoute(routeDraft.startsWith("/") ? routeDraft : `/${routeDraft}`);
+    navigateToRoute(routeDraft);
   };
 
-  const viewportStyle = useMemo(() => {
-    const width = VIEWPORTS[viewport].width;
-    return width ? { width: `${width}px`, maxWidth: "100%" } : undefined;
-  }, [viewport]);
+  const renderWorkspace = () => {
+    if (workspace === "components") return <ComponentsWorkspace project={project} selection={selection} onSelect={setSelection} />;
+    if (workspace === "design-system") return <DesignSystemWorkspace project={project} selection={selection} onSelect={setSelection} />;
+    if (workspace === "assets") return <AssetsWorkspace project={project} selection={selection} onSelect={setSelection} />;
+    if (workspace === "routes") return <RoutesWorkspace project={project} selection={selection} onSelect={setSelection} onOpen={navigateToRoute} />;
+    if (workspace === "servers") return (
+      <ServersWorkspace
+        session={session}
+        address={serverAddress}
+        onAddressChange={setServerAddress}
+        canStart={Boolean(project && apiReady && sessionConfigReady)}
+        onStart={start}
+        onStop={stop}
+      />
+    );
+    return (
+      <CanvasWorkspace
+        project={project}
+        session={session}
+        canvasMountRef={canvasMountRef}
+        nativeAvailable={Boolean(window.largerCanvas)}
+        routeDraft={routeDraft}
+        viewport={viewport}
+        onRouteDraftChange={setRouteDraft}
+        onRouteSubmit={submitRoute}
+        onViewportChange={setViewport}
+        onReload={() => {
+          if (!surfaceUrl || !window.largerCanvas) return;
+          const url = new URL(route, `${surfaceUrl}/`).toString();
+          void window.largerCanvas.navigate(url).catch((error: Error) => setRequestError(error.message));
+        }}
+        canStart={Boolean(project && apiReady && sessionConfigReady)}
+        onStart={start}
+        onStop={stop}
+      />
+    );
+  };
 
-  const visibleLogs = [...session.logs].reverse();
-  const isBusy = ["preparing", "starting-target", "starting-engine", "stopping"].includes(session.phase);
-  const nativeAvailable = Boolean(window.largerCanvas);
+  const isBusy = ["preparing", "starting-target", "starting-adapter", "stopping"].includes(session.phase);
+  const isStarting = ["preparing", "starting-target", "starting-adapter"].includes(session.phase);
+  const isRunning = session.phase === "ready";
 
   return (
-    <main className="studio-shell">
-      <header className="titlebar">
-        <div className="wordmark">
-          <span className="wordmark__name">Larger</span>
+    <main className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      <header className="app-drag flex min-h-12 items-center border-b bg-background px-4 pl-20">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold tracking-tight">Larger</span>
+          <span className="text-xs text-muted-foreground">/</span>
+          <span className="max-w-64 truncate text-xs text-muted-foreground">{project?.name ?? "reading project"}</span>
         </div>
-        <div className="project-pill">
-          <Glyph name="branch" size={14} />
-          <span>{project?.name ?? "reading project"}</span>
-          <small>{project?.git.branch ?? "—"}</small>
-        </div>
-        <div className="titlebar__actions">
-          <div className={`live-status live-status--${session.phase}`}>
-            <span className="live-status__dot" />
-            {phaseLabel(session.phase)}
-          </div>
-          {session.phase === "ready" || session.phase === "stopping" ? (
-            <button className="ghost-action" disabled={session.phase === "stopping"} onClick={stop}><Glyph name="stop" size={14} /> {session.phase === "stopping" ? "Stopping…" : "Stop"}</button>
+        <div className="ml-auto flex items-center gap-2 app-no-drag">
+          {project && (
+            <Badge variant="outline" className="max-w-48 gap-1.5 font-mono text-[10px]">
+              <GitBranchIcon className="size-3" />{project.git.branch}
+            </Badge>
+          )}
+          {isRunning || isStarting || session.phase === "stopping" ? (
+            <Button size="sm" variant="outline" disabled={session.phase === "stopping"} onClick={stop}>
+              <CircleStopIcon data-icon="inline-start" />
+              {session.phase === "stopping" ? "Stopping" : isStarting ? "Cancel" : "Stop"}
+            </Button>
           ) : (
-            <button className="primary-action" disabled={!project || !apiReady || isBusy || isStarting} onClick={start}>
-              <Glyph name="play" size={14} /> {isBusy || isStarting ? "Starting…" : "Start"}
-            </button>
+            <Button size="sm" disabled={!project || !apiReady || !sessionConfigReady || isBusy} onClick={start}>
+              <PlayIcon data-icon="inline-start" />{isBusy ? "Starting" : "Start"}
+            </Button>
           )}
         </div>
       </header>
 
-      <div className="studio-body">
-        <nav className="tool-rail" aria-label="Project views">
-          <div className="tool-rail__group">
-            {PANELS.map((item) => (
-              <button
-                aria-label={item.label}
-                className={panel === item.id ? "active" : ""}
-                key={item.id}
-                onClick={() => setPanel(item.id)}
-                title={item.label}
-              >
-                <Glyph name={item.glyph} size={17} />
-              </button>
-            ))}
-          </div>
-        </nav>
-
-        <aside className="project-sidebar">
-          {project ? (
-            <ProjectPanel panel={panel} project={project} onRoute={navigateToRoute} />
-          ) : (
-            <div className="sidebar-loading"><span /><span /><span /><span /></div>
-          )}
-        </aside>
-
-        <section className="canvas-column">
-          <div className="canvas-toolbar">
-            <form className="route-control" onSubmit={submitRoute}>
-              <span className="route-control__slash">/</span>
-              <input
-                aria-label="Canvas route"
-                disabled={!canvasReady}
-                onChange={(event) => setRouteDraft(event.target.value)}
-                spellCheck={false}
-                value={routeDraft.replace(/^\//, "")}
-              />
-            </form>
-            <div className="viewport-switcher" aria-label="Viewport size">
-              {(Object.keys(VIEWPORTS) as Viewport[]).map((key) => (
-                <button
-                  aria-label={VIEWPORTS[key].label}
-                  className={viewport === key ? "active" : ""}
-                  key={key}
-                  onClick={() => setViewport(key)}
-                  title={VIEWPORTS[key].label}
-                >
-                  <Glyph name={VIEWPORTS[key].glyph} size={15} />
-                </button>
-              ))}
-            </div>
-            <div className="canvas-toolbar__meta">
-              <span>{VIEWPORTS[viewport].label}</span>
-              <button
-                aria-label="Reload canvas"
-                disabled={!currentUrl || !window.largerCanvas}
-                onClick={() => currentUrl && window.largerCanvas?.navigate(currentUrl)}
-                title="Reload canvas"
-              ><Glyph name="refresh" size={14} /></button>
-            </div>
-          </div>
-
-          <div className={`canvas-stage canvas-stage--${viewport}`}>
-            <div className="canvas-frame" style={viewportStyle}>
-              <div className="native-canvas-slot" ref={canvasMountRef}>
-                {!canvasReady && <EmptyStudio project={project} onStart={start} />}
-                {canvasReady && !nativeAvailable && (
-                  <div className="native-required">
-                    <strong>Open this studio through Electron.</strong>
-                    <span>React Rewrite disables its overlay in ordinary iframes, so the POC intentionally has no fake browser fallback.</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <aside className="context-sidebar">
-          <section className="context-header">
-            <h2>Session</h2>
-          </section>
-
-          <section className="context-section">
-            <header><span>Connection</span><small>{phaseLabel(session.phase)}</small></header>
-            <dl className="fact-list">
-              <div><dt>Engine</dt><dd>React Rewrite{session.engineVersion ? ` ${session.engineVersion}` : ""}</dd></div>
-              <div><dt>Target</dt><dd>{project?.framework ?? "—"} / {project?.packageManager ?? "—"}</dd></div>
-              <div><dt>Surface</dt><dd>Native WebContentsView</dd></div>
-              <div><dt>Files</dt><dd>Working copy</dd></div>
-            </dl>
-          </section>
-
-          {project && project.git.dirtyFiles.length > 0 && (
-            <section className="wip-card">
-              <header><span>Existing local work</span><b>{project.git.dirtyFiles.length}</b></header>
-              <p>Preserved in the source checkout and copied into the sandbox baseline.</p>
-              <ul>{project.git.dirtyFiles.map((file) => <li key={file}>{file}</li>)}</ul>
-            </section>
-          )}
-
-          <section className="context-section context-section--changes">
-            <header><span>Sandbox changes</span><small>{session.changes.length}</small></header>
-            {session.changes.length === 0 ? (
-              <div className="empty-changes"><span>∅</span><p>No changes.</p></div>
-            ) : (
-              <ul className="change-list">
-                {session.changes.map((change) => (
-                  <li key={change.file}><b>{change.status[0].toUpperCase()}</b><span>{change.file}</span></li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="context-section context-section--logs">
-            <header><span>Logs</span><small>{visibleLogs.length}</small></header>
-            <div className="log-list">
-              {visibleLogs.length === 0 ? <p>Waiting for a launch.</p> : visibleLogs.map((log, index) => (
-                <div className={`log-row log-row--${log.source}`} key={`${log.at}-${index}`}>
-                  <span>{log.source.slice(0, 1)}</span><p>{log.message}</p>
-                </div>
-              ))}
-            </div>
-          </section>
-        </aside>
-      </div>
+      <SidebarProvider
+        className="min-h-0 flex-1"
+        style={{ "--sidebar-width": "100%" } as CSSProperties}
+      >
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0">
+          <ResizablePanel defaultSize="18%" minSize="15%" maxSize="27%">
+            <StudioNavigation project={project} phase={session.phase} workspace={workspace} onWorkspaceChange={changeWorkspace} />
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel defaultSize="61%" minSize="42%">
+            <section className="h-full min-h-0 bg-background">{renderWorkspace()}</section>
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel defaultSize="21%" minSize="17%" maxSize="30%">
+            <Inspector workspace={workspace} selection={selection} session={session} />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </SidebarProvider>
 
       {(requestError || session.error) && (
-        <div className="error-toast" role="alert">
-          <strong>Session error</strong>
-          <span>{requestError ?? session.error}</span>
-          <button onClick={() => setRequestError(null)}>Dismiss</button>
+        <div className="fixed right-4 bottom-4 z-50 w-[min(420px,calc(100vw-2rem))]">
+          <Alert variant="destructive" className="bg-background shadow-xl">
+            <AlertTitle>Session error</AlertTitle>
+            <AlertDescription>{requestError ?? session.error}</AlertDescription>
+            <AlertAction><Button size="xs" variant="ghost" onClick={() => setRequestError(null)}>Dismiss</Button></AlertAction>
+          </Alert>
         </div>
       )}
     </main>

@@ -1,8 +1,10 @@
 import { createReadStream } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { SessionStartOptions } from "../src/contracts.js";
 import { readManifest, resolveSourceRoot } from "./manifest.js";
+import { resolveEditorAdapter } from "./editor-adapters.js";
 import { inspectProject, mimeTypeForAsset, resolveProjectAsset } from "./project-inspector.js";
 import { SessionManager } from "./session-manager.js";
 
@@ -14,7 +16,11 @@ const manifest = await readManifest();
 const sourceRoot = await resolveSourceRoot(manifest);
 const sourceStat = await stat(sourceRoot);
 if (!sourceStat.isDirectory()) throw new Error(`Project root is not a directory: ${sourceRoot}`);
-const session = new SessionManager(manifest, sourceRoot);
+const session = new SessionManager(
+  manifest,
+  sourceRoot,
+  resolveEditorAdapter(manifest.project.engine.adapter),
+);
 
 function applyCommonHeaders(response: ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", STUDIO_ORIGIN);
@@ -27,6 +33,19 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   applyCommonHeaders(response);
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(value));
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > 16_384) throw new Error("Request body is too large");
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 const server = createServer(async (request, response) => {
@@ -67,7 +86,8 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/session/start") {
-      sendJson(response, 200, await session.start());
+      const options = await readJsonBody(request) as SessionStartOptions;
+      sendJson(response, 200, await session.start(options));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/session/stop") {
