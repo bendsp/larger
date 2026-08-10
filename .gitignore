@@ -1,6 +1,9 @@
 node_modules/
 dist/
-.larger/
+.larger/electron/
+.larger/runtime/
+.larger/cache/
+.larger/logs/
 larger.project.json
 *.log
 .DS_Store

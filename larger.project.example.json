@@ -1,18 +1,24 @@
 {
-  "$schema": "./schemas/larger-project.schema.json",
+  "$schema": "https://larger.design/schemas/larger-project.schema.json",
   "schemaVersion": 1,
-  "project": {
-    "name": "my-app",
-    "root": "../my-app",
-    "entryRoute": "/",
-    "dev": {
-      "command": ["npm", "run", "dev", "--", "--host", "{host}", "--port", "{port}"],
+  "projectId": "example.react-app",
+  "name": "Example React app",
+  "defaultRuntimeProfile": "development",
+  "runtimeProfiles": {
+    "development": {
+      "command": [
+        "pnpm",
+        "dev",
+        "--host",
+        "{host}",
+        "--port",
+        "{port}"
+      ],
+      "workingDirectory": ".",
       "host": "127.0.0.1",
-      "preferredPort": 3100
-    },
-    "engine": {
-      "adapter": "react-rewrite",
-      "mode": "sandbox"
+      "preferredPort": 3100,
+      "entryRoute": "/",
+      "editorAdapter": "react-rewrite"
     }
   }
 }

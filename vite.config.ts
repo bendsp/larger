@@ -17,9 +17,6 @@ export default defineConfig({
     watch: {
       ignored: ["**/.larger/**"],
     },
-    proxy: {
-      "/api": "http://127.0.0.1:4311",
-    },
   },
   preview: {
     host: "127.0.0.1",

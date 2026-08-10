@@ -6,10 +6,10 @@ export interface CanvasBounds {
 }
 
 export interface LargerCanvasBridge {
-  load(url: string): Promise<{ ok: true }>;
-  navigate(url: string): Promise<{ ok: true }>;
-  setBounds(bounds: CanvasBounds): void;
-  show(): void;
+  load(generation: number, url: string): Promise<{ ok: true }>;
+  navigate(generation: number, url: string): Promise<{ ok: true }>;
+  setBounds(generation: number, bounds: CanvasBounds): void;
+  show(generation: number): void;
   hide(): void;
-  onNavigation(listener: (url: string) => void): () => void;
+  onNavigation(listener: (navigation: { generation: number; url: string }) => void): () => void;
 }
