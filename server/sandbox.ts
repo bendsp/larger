@@ -4,7 +4,7 @@ import { access, cp, lstat, mkdir, readFile, readdir, readlink, realpath, rm } f
 import path from "node:path";
 import type { SandboxChange } from "../src/contracts.js";
 
-const EXCLUDED_ROOT_ENTRIES = new Set([".git", "node_modules", "out"]);
+const EXCLUDED_ROOT_ENTRIES = new Set([".git", "dist", "node_modules", "out"]);
 const DIFF_EXTENSIONS = new Set([".css", ".js", ".jsx", ".json", ".md", ".mdx", ".ts", ".tsx"]);
 
 function isExcluded(relativePath: string): boolean {
@@ -181,12 +181,4 @@ export async function inspectSandboxChanges(
   }
 
   return changes;
-}
-
-export async function isSymlink(filePath: string): Promise<boolean> {
-  try {
-    return (await lstat(filePath)).isSymbolicLink();
-  } catch {
-    return false;
-  }
 }

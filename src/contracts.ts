@@ -54,17 +54,14 @@ export interface BrandFont {
 
 export interface GitSummary {
   branch: string;
-  upstream: string | null;
   dirtyFiles: string[];
 }
 
 export interface ProjectSummary {
   name: string;
-  root: string;
   entryRoute: string;
   framework: Framework;
   packageManager: PackageManager;
-  packageName: string;
   git: GitSummary;
   routes: ProjectRoute[];
   components: ProjectComponent[];
@@ -72,14 +69,17 @@ export interface ProjectSummary {
   brand: {
     tokens: BrandToken[];
     fonts: BrandFont[];
-    cssFiles: string[];
     tailwindConfig: string | null;
     shadcn: {
       detected: boolean;
       style: string | null;
-      baseColor: string | null;
       iconLibrary: string | null;
     };
+  };
+  truncated: {
+    files: boolean;
+    assets: boolean;
+    css: boolean;
   };
 }
 
@@ -105,15 +105,8 @@ export interface SandboxChange {
 
 export interface SessionSnapshot {
   phase: SessionPhase;
-  targetUrl: string | null;
   proxyUrl: string | null;
-  websocketUrl: string | null;
-  sourceRoot: string;
-  runtimeRoot: string | null;
-  isolation: "sandbox";
-  engine: "react-rewrite";
   engineVersion: string;
-  startedAt: number | null;
   error: string | null;
   logs: SessionLog[];
   changes: SandboxChange[];

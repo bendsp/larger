@@ -7,12 +7,17 @@ const studioRoot = path.resolve(electronDirectory, "..");
 const developmentUrl = "http://127.0.0.1:4310";
 const packagedStudioUrl = pathToFileURL(path.join(studioRoot, "dist", "index.html")).href;
 
+/** @type {BrowserWindow | null} */
 let mainWindow = null;
+/** @type {WebContentsView | null} */
 let canvasView = null;
 let canvasAttached = false;
+/** @type {string | null} */
 let allowedCanvasOrigin = null;
 
+/** @param {unknown} value @returns {value is string} */
 function isLoopbackUrl(value) {
+  if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
     return (
@@ -24,7 +29,9 @@ function isLoopbackUrl(value) {
   }
 }
 
+/** @param {unknown} value @returns {value is string} */
 function isTrustedStudioUrl(value) {
+  if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
     if (!app.isPackaged) return url.origin === new URL(developmentUrl).origin;
@@ -36,6 +43,7 @@ function isTrustedStudioUrl(value) {
   }
 }
 
+/** @param {import("electron").IpcMainInvokeEvent | import("electron").IpcMainEvent} event */
 function assertTrustedStudioSender(event) {
   const senderUrl = event.senderFrame?.url || event.sender.getURL();
   if (!isTrustedStudioUrl(senderUrl)) throw new Error("Rejected untrusted Electron IPC sender");
@@ -125,8 +133,8 @@ function createWindow() {
   }
 }
 
-ipcMain.handle("canvas:load", async (_event, url) => {
-  assertTrustedStudioSender(_event);
+ipcMain.handle("canvas:load", async (event, url) => {
+  assertTrustedStudioSender(event);
   if (!isLoopbackUrl(url)) throw new Error("Canvas only accepts loopback HTTP origins");
   const parsed = new URL(url);
   allowedCanvasOrigin = parsed.origin;
@@ -135,8 +143,8 @@ ipcMain.handle("canvas:load", async (_event, url) => {
   return { ok: true };
 });
 
-ipcMain.handle("canvas:navigate", async (_event, url) => {
-  assertTrustedStudioSender(_event);
+ipcMain.handle("canvas:navigate", async (event, url) => {
+  assertTrustedStudioSender(event);
   if (!isLoopbackUrl(url) || new URL(url).origin !== allowedCanvasOrigin) {
     throw new Error("Canvas navigation must stay on the active proxy origin");
   }
@@ -145,14 +153,15 @@ ipcMain.handle("canvas:navigate", async (_event, url) => {
   return { ok: true };
 });
 
-ipcMain.on("canvas:bounds", (_event, bounds) => {
+ipcMain.on("canvas:bounds", (event, bounds) => {
   try {
-    assertTrustedStudioSender(_event);
+    assertTrustedStudioSender(event);
   } catch {
     return;
   }
   if (!mainWindow || !canvasView || !canvasAttached) return;
   const windowBounds = mainWindow.getContentBounds();
+  /** @param {unknown} value */
   const numberOrZero = (value) => {
     const number = Number(value);
     return Number.isFinite(number) ? number : 0;

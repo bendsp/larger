@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
-  "description": "A Git-native visual design IDE for real React codebases.",
+  "description": "A visual design studio for React projects.",
   "scripts": {
     "dev": "concurrently --kill-others --names api,studio,electron --prefix-colors cyan,magenta,yellow \"npm:dev:api\" \"npm:dev:studio\" \"npm:dev:electron\"",
     "dev:api": "tsx watch server/index.ts",

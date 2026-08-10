@@ -2,20 +2,11 @@
   "$schema": "./schemas/larger-project.schema.json",
   "schemaVersion": 1,
   "project": {
-    "name": "desprets.net",
-    "root": "../desprets.net",
+    "name": "my-app",
+    "root": "../my-app",
     "entryRoute": "/",
     "dev": {
-      "command": [
-        "pnpm",
-        "exec",
-        "next",
-        "dev",
-        "--hostname",
-        "127.0.0.1",
-        "--port",
-        "{port}"
-      ],
+      "command": ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "{port}"],
       "host": "127.0.0.1",
       "preferredPort": 3100
     },
@@ -25,4 +16,3 @@
     }
   }
 }
-

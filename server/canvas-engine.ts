@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
@@ -24,6 +24,12 @@ export interface CanvasEngine {
 type LogHandler = (message: string) => void;
 
 const ANSI_PATTERN = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+const require = createRequire(import.meta.url);
+const reactRewritePackagePath = require.resolve("react-rewrite-cli/package.json");
+const reactRewritePackage = JSON.parse(readFileSync(reactRewritePackagePath, "utf8")) as {
+  version: string;
+  bin: Record<string, string>;
+};
 
 export function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "");
@@ -92,7 +98,7 @@ async function terminateProcess(child: ChildProcess | null): Promise<boolean> {
 
 export class ReactRewriteEngine implements CanvasEngine {
   readonly id = "react-rewrite";
-  readonly version = "0.1.1";
+  readonly version = reactRewritePackage.version;
   private child: ChildProcess | null = null;
   private stopping = false;
 
@@ -104,12 +110,10 @@ export class ReactRewriteEngine implements CanvasEngine {
   async start(input: CanvasStartInput): Promise<CanvasEngineSession> {
     if (this.child) throw new Error("React Rewrite is already running");
 
-    const require = createRequire(import.meta.url);
-    const packageJsonPath = require.resolve("react-rewrite-cli/package.json");
-    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
-      bin: Record<string, string>;
-    };
-    const binary = path.resolve(path.dirname(packageJsonPath), packageJson.bin["react-rewrite"]);
+    const binary = path.resolve(
+      path.dirname(reactRewritePackagePath),
+      reactRewritePackage.bin["react-rewrite"],
+    );
     const args = [binary, String(input.port), "--host", input.host, "--no-open"];
 
     const child = spawn(process.execPath, args, {

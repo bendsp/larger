@@ -21,10 +21,10 @@ test("derives root routes, assets, brand weights, and shadcn metadata from files
     writeFile(path.join(root, "components", "theme-toggle.tsx"), "export function ThemeToggle() { return <button>theme</button> }"),
     writeFile(path.join(root, "public", "icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\" />"),
     writeFile(path.join(root, "tailwind.config.ts"), "export default {}"),
-    writeFile(path.join(root, "components.json"), JSON.stringify({ style: "new-york", iconLibrary: "lucide", tailwind: { baseColor: "neutral" } })),
+    writeFile(path.join(root, "components.json"), JSON.stringify({ style: "new-york", iconLibrary: "lucide" })),
     writeFile(
       path.join(root, "app", "globals.css"),
-      '@font-face { font-family: "Satoshi"; font-weight: 400; }\n@font-face { font-family: "Satoshi"; font-weight: 700; }\n:root { --background: #fff; }\n.dark { --background: #111; }',
+      '@font-face { font-family: "Fixture Sans"; font-weight: 400; }\n@font-face { font-family: "Fixture Sans"; font-weight: 700; }\n:root { --background: #fff; }\n.dark { --background: #111; }',
     ),
   ]);
 
@@ -40,7 +40,6 @@ test("derives root routes, assets, brand weights, and shadcn metadata from files
   assert.deepEqual(project.brand.shadcn, {
     detected: true,
     style: "new-york",
-    baseColor: "neutral",
     iconLibrary: "lucide",
   });
 });

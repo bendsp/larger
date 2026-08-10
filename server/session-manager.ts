@@ -52,9 +52,7 @@ export class SessionManager {
   private phase: SessionSnapshot["phase"] = "idle";
   private targetUrl: string | null = null;
   private proxyUrl: string | null = null;
-  private websocketUrl: string | null = null;
   private runtimeRoot: string | null = null;
-  private startedAt: number | null = null;
   private error: string | null = null;
   private logs: SessionLog[] = [];
   private cachedChanges: SessionSnapshot["changes"] = [];
@@ -139,7 +137,6 @@ export class SessionManager {
     this.changesCheckedAt = 0;
     this.baselineReady = false;
     this.phase = "preparing";
-    this.startedAt = Date.now();
     this.addLog("studio", "Creating an isolated copy of the current working tree");
 
     try {
@@ -198,9 +195,8 @@ export class SessionManager {
       });
       this.assertActiveGeneration(generation);
       this.proxyUrl = engineSession.proxyUrl;
-      this.websocketUrl = engineSession.websocketUrl;
       this.phase = "ready";
-      this.addLog("studio", "Canvas is live. Engine edits are rooted in the disposable copy.");
+      this.addLog("studio", "Canvas ready");
       return await this.snapshot();
     } catch (startError) {
       if (generation !== this.generation) {
@@ -266,8 +262,6 @@ export class SessionManager {
     this.phase = "idle";
     this.targetUrl = null;
     this.proxyUrl = null;
-    this.websocketUrl = null;
-    this.startedAt = null;
     this.error = null;
     return await this.snapshot();
   }
@@ -286,15 +280,8 @@ export class SessionManager {
 
     return {
       phase: this.phase,
-      targetUrl: this.targetUrl,
       proxyUrl: this.proxyUrl,
-      websocketUrl: this.websocketUrl,
-      sourceRoot: this.sourceRoot,
-      runtimeRoot: this.runtimeRoot,
-      isolation: "sandbox",
-      engine: "react-rewrite",
       engineVersion: this.engine.version,
-      startedAt: this.startedAt,
       error: this.error,
       logs: [...this.logs],
       changes: [...this.cachedChanges],

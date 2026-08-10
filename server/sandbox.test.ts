@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createSandbox, inspectSandboxChanges, isSymlink } from "./sandbox.js";
+import { createSandbox, inspectSandboxChanges } from "./sandbox.js";
 
 test("copies dependencies without a write-through symlink and omits source symlinks", async (context) => {
   const base = await mkdtemp(path.join(os.tmpdir(), "larger-sandbox-"));
@@ -26,7 +26,7 @@ test("copies dependencies without a write-through symlink and omits source symli
   const baseline = await createSandbox(source, runtime, base);
 
   await assert.rejects(access(path.join(runtime, "src", "outside-link")));
-  assert.equal(await isSymlink(path.join(runtime, "node_modules", "fixture")), true);
+  assert.equal((await lstat(path.join(runtime, "node_modules", "fixture"))).isSymbolicLink(), true);
   const canonicalRuntime = await realpath(runtime);
   assert.ok((await realpath(path.join(runtime, "node_modules", "fixture"))).startsWith(canonicalRuntime));
   assert.deepEqual(await inspectSandboxChanges(baseline, runtime), []);

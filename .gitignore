@@ -1,6 +1,6 @@
 node_modules/
 dist/
 .larger/
+larger.project.json
 *.log
 .DS_Store
-

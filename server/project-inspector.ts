@@ -14,7 +14,6 @@ import type {
 } from "../src/contracts.js";
 
 const execFileAsync = promisify(execFile);
-const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx", ".md", ".mdx", ".css"]);
 const IMAGE_EXTENSIONS = new Set([".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"]);
 const FONT_EXTENSIONS = new Set([".eot", ".otf", ".ttf", ".woff", ".woff2"]);
 const SKIPPED_DIRECTORIES = new Set([".git", ".next", "dist", "node_modules", "out"]);
@@ -28,12 +27,12 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-async function walkFiles(root: string, relativeDirectory = "", limit = 4_000): Promise<string[]> {
+async function walkFiles(root: string, relativeDirectory = "", limit = 4_000): Promise<{ files: string[]; truncated: boolean }> {
   const { readdir } = await import("node:fs/promises");
   const results: string[] = [];
   const pending = [relativeDirectory];
 
-  while (pending.length > 0 && results.length < limit) {
+  while (pending.length > 0 && results.length <= limit) {
     const current = pending.shift() ?? "";
     const absolute = path.join(root, current);
     let entries;
@@ -46,17 +45,20 @@ async function walkFiles(root: string, relativeDirectory = "", limit = 4_000): P
     for (const entry of entries) {
       const relative = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (!SKIPPED_DIRECTORIES.has(entry.name) && !entry.name.startsWith(".next_stale")) {
+        if (!SKIPPED_DIRECTORIES.has(entry.name) && !entry.name.startsWith(".next")) {
           pending.push(relative);
         }
-      } else if (entry.isFile() || entry.isSymbolicLink()) {
+      } else if (entry.isFile()) {
         results.push(relative);
-        if (results.length >= limit) break;
+        if (results.length > limit) break;
       }
     }
   }
 
-  return results.sort((a, b) => a.localeCompare(b));
+  return {
+    files: results.slice(0, limit).sort((a, b) => a.localeCompare(b)),
+    truncated: results.length > limit,
+  };
 }
 
 function detectFramework(files: Set<string>, packageJson: Record<string, unknown>): Framework {
@@ -163,19 +165,19 @@ async function inspectGit(root: string): Promise<ProjectSummary["git"]> {
     });
     const lines = stdout.trimEnd().split("\n").filter(Boolean);
     const branchLine = (lines.shift() ?? "## unknown").replace(/^##\s*/, "");
-    const [branch, upstream] = branchLine.split("...");
+    const [branch] = branchLine.split("...");
     return {
       branch: branch.trim(),
-      upstream: upstream?.split(" ")[0]?.trim() || null,
       dirtyFiles: lines.map((line) => line.slice(3).trim()),
     };
   } catch {
-    return { branch: "not a git repository", upstream: null, dirtyFiles: [] };
+    return { branch: "not a git repository", dirtyFiles: [] };
   }
 }
 
 export async function inspectProject(name: string, root: string, entryRoute = "/"): Promise<ProjectSummary> {
-  const allFiles = await walkFiles(root);
+  const inventory = await walkFiles(root);
+  const allFiles = inventory.files;
   const files = new Set(allFiles.map((file) => file.split(path.sep).join("/")));
   const packagePath = path.join(root, "package.json");
   const packageJson = JSON.parse(await readFile(packagePath, "utf8")) as Record<string, unknown>;
@@ -194,6 +196,7 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
     const normalized = file.split(path.sep).join("/");
     return normalized.startsWith("public/") || normalized.startsWith("src/assets/");
   });
+  const assetsTruncated = assetFiles.length > 160;
   const assets: ProjectAsset[] = [];
   for (const file of assetFiles.slice(0, 160)) {
     const normalized = file.split(path.sep).join("/");
@@ -208,7 +211,9 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
     });
   }
 
-  const cssFiles = allFiles.filter((file) => path.extname(file) === ".css").slice(0, 30);
+  const allCssFiles = allFiles.filter((file) => path.extname(file) === ".css");
+  const cssTruncated = allCssFiles.length > 30;
+  const cssFiles = allCssFiles.slice(0, 30);
   const tokens: BrandToken[] = [];
   const fonts: BrandFont[] = [];
   for (const cssFile of cssFiles) {
@@ -236,7 +241,6 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
   let shadcn: ProjectSummary["brand"]["shadcn"] = {
     detected: false,
     style: null,
-    baseColor: null,
     iconLibrary: null,
   };
   if (await exists(path.join(root, "components.json"))) {
@@ -244,12 +248,10 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
       const componentsJson = JSON.parse(await readFile(path.join(root, "components.json"), "utf8")) as {
         style?: string;
         iconLibrary?: string;
-        tailwind?: { baseColor?: string };
       };
       shadcn = {
         detected: true,
         style: componentsJson.style ?? null,
-        baseColor: componentsJson.tailwind?.baseColor ?? null,
         iconLibrary: componentsJson.iconLibrary ?? null,
       };
     } catch {
@@ -259,11 +261,9 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
 
   return {
     name,
-    root,
     entryRoute,
     framework: detectFramework(files, packageJson),
     packageManager: detectPackageManager(files),
-    packageName: typeof packageJson.name === "string" ? packageJson.name : name,
     git: await inspectGit(root),
     routes,
     components,
@@ -271,9 +271,13 @@ export async function inspectProject(name: string, root: string, entryRoute = "/
     brand: {
       tokens: uniqueTokens,
       fonts: uniqueFonts,
-      cssFiles: cssFiles.map((file) => file.split(path.sep).join("/")),
       tailwindConfig,
       shadcn,
+    },
+    truncated: {
+      files: inventory.truncated,
+      assets: assetsTruncated,
+      css: cssTruncated,
     },
   };
 }
@@ -309,5 +313,3 @@ export function mimeTypeForAsset(file: string): string {
   };
   return types[extension] ?? "application/octet-stream";
 }
-
-export { SOURCE_EXTENSIONS };

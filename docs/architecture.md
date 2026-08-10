@@ -1,8 +1,6 @@
-# POC architecture
+# Architecture
 
-## Product boundary
-
-React Rewrite solves the difficult React-to-source path. Larger owns the surrounding workflow: project intelligence, working-copy isolation, canvas hosting, assets, brand context, Git variants, and future agent operations.
+React Rewrite is isolated behind a canvas engine interface.
 
 ```ts
 interface CanvasEngine {
@@ -20,9 +18,7 @@ interface CanvasEngine {
 }
 ```
 
-The first adapter resolves Larger's pinned React Rewrite binary, launches it with the sandbox as `cwd`, and parses the dynamically allocated proxy and WebSocket URLs. No UI component imports React Rewrite internals.
-
-## Runtime ownership
+The adapter launches the installed React Rewrite binary from the disposable working copy and parses its proxy URLs. The renderer only consumes the session contract.
 
 ```text
 Electron main
@@ -38,34 +34,13 @@ Local API
         └── CanvasEngine process
 
 React renderer
-  ├── routes / components
-  ├── assets / brand
-  ├── viewport geometry
-  └── run context / change tape
+  ├── project views
+  ├── viewport controls
+  └── session state
 ```
 
-The native view is required because React Rewrite exits early when its document is inside an iframe. It also creates a hard but useful layout constraint: studio controls reserve space around the canvas instead of layering arbitrary DOM over it.
+The native canvas view is required because React Rewrite does not run its overlay inside an iframe.
 
-## Next seam to extract
+## Trust boundary
 
-The upstream overlay currently owns selection and editing. The next meaningful experiment is a headless runtime bridge with events such as:
-
-```ts
-engine.on("selection", (node) => {});
-engine.preview(operation);
-engine.commit(operation);
-engine.revert(patchId);
-```
-
-That bridge should preserve the current `CanvasEngine` boundary while moving selection chrome and patch review into Larger. It should also add loopback-only binding, a per-session token, multi-client semantics, and a patch preview that does not write until the user confirms in the host app.
-
-## Deliberately absent
-
-- No database for project truth.
-- No independent scene graph.
-- No code export.
-- No realtime multiplayer.
-- No agent provider or credit system.
-- No universal “drag any pixel” promise.
-
-The next product feature should be Git-backed design variants only after safe patch staging and the outer selection bridge are proven.
+The working copy protects the source checkout from engine writes; it is not an operating-system sandbox. The configured development command is trusted local code, and the upstream React Rewrite proxy and WebSocket listeners are unauthenticated. Run sessions only on a trusted machine and network, then stop them after use.

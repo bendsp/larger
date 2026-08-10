@@ -21,15 +21,8 @@ type Viewport = "desktop" | "tablet" | "mobile";
 
 const INITIAL_SESSION: SessionSnapshot = {
   phase: "idle",
-  targetUrl: null,
   proxyUrl: null,
-  websocketUrl: null,
-  sourceRoot: "",
-  runtimeRoot: null,
-  isolation: "sandbox",
-  engine: "react-rewrite",
-  engineVersion: "0.1.1",
-  startedAt: null,
+  engineVersion: "",
   error: null,
   logs: [],
   changes: [],
@@ -53,7 +46,6 @@ type GlyphName =
   | "branch"
   | "component"
   | "desktop"
-  | "external"
   | "file"
   | "image"
   | "mobile"
@@ -61,7 +53,6 @@ type GlyphName =
   | "play"
   | "refresh"
   | "route"
-  | "shield"
   | "stop"
   | "tablet";
 
@@ -70,7 +61,6 @@ const GLYPHS: Record<GlyphName, ReactNode> = {
   branch: <path d="M6 3v12a3 3 0 0 0 3 3h3m0 0-3-3m3 3-3 3M18 3v3a3 3 0 0 1-3 3H9m9-6-2 2m2-2 2 2" />,
   component: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
   desktop: <><rect x="3" y="4" width="18" height="13" rx="1.5" /><path d="M8 21h8m-4-4v4" /></>,
-  external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6" /></>,
   file: <><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v5h5" /></>,
   image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 5" /></>,
   mobile: <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4m-3 14h2" /></>,
@@ -78,7 +68,6 @@ const GLYPHS: Record<GlyphName, ReactNode> = {
   play: <path d="m8 5 11 7-11 7Z" />,
   refresh: <><path d="M20 7v5h-5" /><path d="M18.5 16A8 8 0 1 1 20 12" /></>,
   route: <><circle cx="6" cy="5" r="2" /><circle cx="18" cy="19" r="2" /><path d="M6 7v5a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3v-1" /></>,
-  shield: <><path d="M12 3 5 6v5c0 4.6 2.6 8 7 10 4.4-2 7-5.4 7-10V6Z" /><path d="m9 12 2 2 4-5" /></>,
   stop: <rect x="6" y="6" width="12" height="12" rx="1" />,
   tablet: <><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M9 5h6m-4 14h2" /></>,
 };
@@ -150,9 +139,9 @@ function phaseLabel(phase: SessionPhase): string {
     preparing: "Copying sandbox",
     "starting-target": "Starting project",
     "starting-engine": "Starting canvas",
-    ready: "Canvas live",
+    ready: "Running",
     stopping: "Stopping",
-    error: "Needs attention",
+    error: "Error",
   };
   return labels[phase];
 }
@@ -161,7 +150,7 @@ function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: Proj
   if (panel === "routes") {
     return (
       <div className="panel-list">
-        <PanelIntro eyebrow="Application" title="Routes" meta={`${project.routes.length} discovered`} />
+        <PanelIntro title="Routes" meta={`${project.routes.length}${project.truncated.files ? "+" : ""}`} />
         {project.routes.map((route) => (
           <button
             className="route-row"
@@ -180,16 +169,15 @@ function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: Proj
   }
 
   if (panel === "components") {
-    const uiCount = project.components.filter((component) => component.family === "ui").length;
     return (
       <div className="panel-list">
-        <PanelIntro eyebrow="Source inventory" title="Components" meta={`${project.components.length} found · ${uiCount} UI`} />
+        <PanelIntro title="Components" meta={`${project.components.length}${project.truncated.files ? "+" : ""}`} />
         {project.components.map((component) => (
           <div className="component-row" key={component.file}>
             <span className={`component-mark component-mark--${component.family}`} />
             <span>
               <strong>{component.name}</strong>
-              <small>{component.file}</small>
+              <small>{component.family} · {component.file}</small>
             </span>
           </div>
         ))}
@@ -201,7 +189,7 @@ function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: Proj
     const previewAssets = project.assets.filter((asset) => asset.previewUrl);
     return (
       <div className="panel-list panel-list--assets">
-        <PanelIntro eyebrow="On disk" title="Assets" meta={`${project.assets.length} indexed`} />
+        <PanelIntro title="Assets" meta={`${project.assets.length}${project.truncated.assets ? "+" : ""}`} />
         <div className="asset-grid">
           {previewAssets.map((asset) => <AssetTile asset={asset} key={asset.path} />)}
         </div>
@@ -221,7 +209,7 @@ function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: Proj
   const darkTokens = project.brand.tokens.filter((token) => token.mode === "dark");
   return (
     <div className="panel-list panel-list--brand">
-      <PanelIntro eyebrow="Derived from source" title="Brand kit" meta={`${project.brand.tokens.length} tokens`} />
+      <PanelIntro title="Brand" meta={`${project.brand.tokens.length}${project.truncated.css ? "+" : ""} tokens`} />
       <BrandMeta project={project} />
       <TokenGroup label="Light" tokens={lightTokens} />
       <TokenGroup label="Dark" tokens={darkTokens} />
@@ -241,10 +229,9 @@ function ProjectPanel({ panel, project, onRoute }: { panel: Panel; project: Proj
   );
 }
 
-function PanelIntro({ eyebrow, title, meta }: { eyebrow: string; title: string; meta: string }) {
+function PanelIntro({ title, meta }: { title: string; meta: string }) {
   return (
     <header className="panel-intro">
-      <span>{eyebrow}</span>
       <h2>{title}</h2>
       <small>{meta}</small>
     </header>
@@ -292,24 +279,16 @@ function TokenGroup({ label, tokens }: { label: string; tokens: BrandToken[] }) 
 function EmptyStudio({ project, onStart }: { project: ProjectSummary | null; onStart: () => void }) {
   return (
     <div className="empty-studio">
-      <div className="empty-studio__index">00 / ATTACH</div>
-      <div className="empty-studio__mark"><span>L</span></div>
-      <p className="empty-studio__kicker">Code is the design document.</p>
-      <h2>Design branches,<br />not mockups.</h2>
+      <h2>{project?.name ?? "Loading project"}</h2>
       <p className="empty-studio__copy">
         {project
-          ? `Launch an isolated copy of ${project.name}, then inspect and reshape the real running interface.`
-          : "Reading the project directly from disk…"}
+          ? "Start the project to inspect and edit its running interface."
+          : "Reading project files…"}
       </p>
       <button className="primary-action primary-action--large" disabled={!project} onClick={onStart}>
         <Glyph name="play" size={15} />
-        Launch sandbox canvas
+        Start
       </button>
-      <div className="empty-studio__proofs">
-        <span><b>01</b> real dev server</span>
-        <span><b>02</b> source-aware overlay</span>
-        <span><b>03</b> disposable writes</span>
-      </div>
     </div>
   );
 }
@@ -325,7 +304,6 @@ export function App() {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [apiReady, setApiReady] = useState(false);
-  const capabilityRef = useRef<string | null>(null);
   const canvasMountRef = useRef<HTMLDivElement>(null);
   const loadedProxyRef = useRef<string | null>(null);
   const canvasReady = session.phase === "ready" && Boolean(session.proxyUrl);
@@ -336,12 +314,8 @@ export function App() {
     let retry = 0;
     const loadProject = async () => {
       try {
-        const [projectValue, health] = await Promise.all([
-          fetchJson<ProjectSummary>("/api/project"),
-          fetchJson<{ capability: string }>("/api/health"),
-        ]);
+        const projectValue = await fetchJson<ProjectSummary>("/api/project");
         if (!cancelled) {
-          capabilityRef.current = health.capability;
           setProject(projectValue);
           setRoute(projectValue.entryRoute);
           setRouteDraft(projectValue.entryRoute);
@@ -402,7 +376,6 @@ export function App() {
     setSession((current) => ({ ...current, phase: "preparing", error: null }));
     try {
       const health = await fetchJson<{ capability: string }>("/api/health");
-      capabilityRef.current = health.capability;
       setSession(await fetchJson<SessionSnapshot>("/api/session/start", {
         method: "POST",
         headers: { "X-Larger-Capability": health.capability },
@@ -420,7 +393,6 @@ export function App() {
     setSession((current) => ({ ...current, phase: "stopping" }));
     try {
       const health = await fetchJson<{ capability: string }>("/api/health");
-      capabilityRef.current = health.capability;
       setSession(await fetchJson<SessionSnapshot>("/api/session/stop", {
         method: "POST",
         headers: { "X-Larger-Capability": health.capability },
@@ -448,7 +420,7 @@ export function App() {
     return width ? { width: `${width}px`, maxWidth: "100%" } : undefined;
   }, [viewport]);
 
-  const visibleLogs = session.logs.slice(-7).reverse();
+  const visibleLogs = [...session.logs].reverse();
   const isBusy = ["preparing", "starting-target", "starting-engine", "stopping"].includes(session.phase);
   const nativeAvailable = Boolean(window.largerCanvas);
 
@@ -456,9 +428,7 @@ export function App() {
     <main className="studio-shell">
       <header className="titlebar">
         <div className="wordmark">
-          <span className="wordmark__symbol">L</span>
           <span className="wordmark__name">Larger</span>
-          <span className="wordmark__thesis">design branches, not mockups</span>
         </div>
         <div className="project-pill">
           <Glyph name="branch" size={14} />
@@ -470,11 +440,11 @@ export function App() {
             <span className="live-status__dot" />
             {phaseLabel(session.phase)}
           </div>
-          {session.phase === "ready" ? (
-            <button className="ghost-action" onClick={stop}><Glyph name="stop" size={14} /> Stop</button>
+          {session.phase === "ready" || session.phase === "stopping" ? (
+            <button className="ghost-action" disabled={session.phase === "stopping"} onClick={stop}><Glyph name="stop" size={14} /> {session.phase === "stopping" ? "Stopping…" : "Stop"}</button>
           ) : (
             <button className="primary-action" disabled={!project || !apiReady || isBusy || isStarting} onClick={start}>
-              <Glyph name="play" size={14} /> Launch canvas
+              <Glyph name="play" size={14} /> {isBusy || isStarting ? "Starting…" : "Start"}
             </button>
           )}
         </div>
@@ -495,7 +465,6 @@ export function App() {
               </button>
             ))}
           </div>
-          <div className="tool-rail__footer"><span>v0.0.1</span></div>
         </nav>
 
         <aside className="project-sidebar">
@@ -509,7 +478,6 @@ export function App() {
         <section className="canvas-column">
           <div className="canvas-toolbar">
             <form className="route-control" onSubmit={submitRoute}>
-              <span className="route-control__origin">{session.proxyUrl ? new URL(session.proxyUrl).host : "local canvas"}</span>
               <span className="route-control__slash">/</span>
               <input
                 aria-label="Canvas route"
@@ -533,7 +501,7 @@ export function App() {
               ))}
             </div>
             <div className="canvas-toolbar__meta">
-              <span>{viewport === "desktop" ? "FIT" : `${VIEWPORTS[viewport].width}px`}</span>
+              <span>{VIEWPORTS[viewport].label}</span>
               <button
                 aria-label="Reload canvas"
                 disabled={!currentUrl || !window.largerCanvas}
@@ -544,14 +512,7 @@ export function App() {
           </div>
 
           <div className={`canvas-stage canvas-stage--${viewport}`}>
-            <div className="canvas-ruler canvas-ruler--top" />
-            <div className="canvas-ruler canvas-ruler--left" />
             <div className="canvas-frame" style={viewportStyle}>
-              <div className="canvas-frame__bar">
-                <span /><span /><span />
-                <em>{project?.name ?? "project"} · {route}</em>
-                <b>{canvasReady ? "LIVE" : "OFFLINE"}</b>
-              </div>
               <div className="native-canvas-slot" ref={canvasMountRef}>
                 {!canvasReady && <EmptyStudio project={project} onStart={start} />}
                 {canvasReady && !nativeAvailable && (
@@ -567,22 +528,16 @@ export function App() {
 
         <aside className="context-sidebar">
           <section className="context-header">
-            <span>Run context</span>
-            <h2>Live source</h2>
-          </section>
-
-          <section className="safety-card">
-            <div className="safety-card__icon"><Glyph name="shield" size={18} /></div>
-            <div><strong>Isolated working copy</strong><span>The editing engine is rooted in a disposable copy. The configured dev command remains trusted local code.</span></div>
+            <h2>Session</h2>
           </section>
 
           <section className="context-section">
             <header><span>Connection</span><small>{phaseLabel(session.phase)}</small></header>
             <dl className="fact-list">
-              <div><dt>Engine</dt><dd>React Rewrite {session.engineVersion}</dd></div>
+              <div><dt>Engine</dt><dd>React Rewrite{session.engineVersion ? ` ${session.engineVersion}` : ""}</dd></div>
               <div><dt>Target</dt><dd>{project?.framework ?? "—"} / {project?.packageManager ?? "—"}</dd></div>
               <div><dt>Surface</dt><dd>Native WebContentsView</dd></div>
-              <div><dt>Engine writes</dt><dd>Working copy</dd></div>
+              <div><dt>Files</dt><dd>Working copy</dd></div>
             </dl>
           </section>
 
@@ -597,7 +552,7 @@ export function App() {
           <section className="context-section context-section--changes">
             <header><span>Sandbox changes</span><small>{session.changes.length}</small></header>
             {session.changes.length === 0 ? (
-              <div className="empty-changes"><span>∅</span><p>No source operations yet.</p></div>
+              <div className="empty-changes"><span>∅</span><p>No changes.</p></div>
             ) : (
               <ul className="change-list">
                 {session.changes.map((change) => (
@@ -608,7 +563,7 @@ export function App() {
           </section>
 
           <section className="context-section context-section--logs">
-            <header><span>Process tape</span><small>{session.logs.length}</small></header>
+            <header><span>Logs</span><small>{visibleLogs.length}</small></header>
             <div className="log-list">
               {visibleLogs.length === 0 ? <p>Waiting for a launch.</p> : visibleLogs.map((log, index) => (
                 <div className={`log-row log-row--${log.source}`} key={`${log.at}-${index}`}>
@@ -622,7 +577,7 @@ export function App() {
 
       {(requestError || session.error) && (
         <div className="error-toast" role="alert">
-          <strong>Canvas could not continue</strong>
+          <strong>Session error</strong>
           <span>{requestError ?? session.error}</span>
           <button onClick={() => setRequestError(null)}>Dismiss</button>
         </div>
