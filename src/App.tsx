@@ -50,7 +50,7 @@ const INITIAL_SESSION: SessionSnapshot = {
   server: {
     mode: "managed",
     configured: { command: [], host: "127.0.0.1", preferredPort: 3000 },
-    activeUrl: null,
+    active: null,
   },
   surface: null,
   error: null,
@@ -73,6 +73,8 @@ function useCanvasBounds(ref: RefObject<HTMLDivElement | null>, enabled: boolean
       if (!enabled) bridge?.hide();
       return;
     }
+
+    bridge.show();
 
     let frame = 0;
     const update = () => {
@@ -122,12 +124,14 @@ export function App() {
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [route, setRoute] = useState("/");
   const [routeDraft, setRouteDraft] = useState("/");
+  const [currentUrl, setCurrentUrl] = useState<string | null>(null);
   const [serverAddress, setServerAddress] = useState("http://127.0.0.1:3000");
   const [requestError, setRequestError] = useState<string | null>(null);
   const [apiReady, setApiReady] = useState(false);
   const [sessionConfigReady, setSessionConfigReady] = useState(false);
   const canvasMountRef = useRef<HTMLDivElement>(null);
   const loadedSurfaceRef = useRef<string | null>(null);
+  const requestedRouteRef = useRef<string | null>(null);
   const serverAddressHydratedRef = useRef(false);
   const surfaceUrl = session.surface?.kind === "web-url" ? session.surface.url : null;
   const canvasReady = session.phase === "ready" && Boolean(surfaceUrl);
@@ -196,13 +200,29 @@ export function App() {
       }
       return;
     }
-    const url = new URL(route, `${surfaceUrl}/`).toString();
-    const request = loadedSurfaceRef.current === surfaceUrl
-      ? window.largerCanvas.navigate(url)
-      : window.largerCanvas.load(url);
+    if (loadedSurfaceRef.current === surfaceUrl) {
+      const requestedRoute = requestedRouteRef.current;
+      if (!requestedRoute) return;
+      requestedRouteRef.current = null;
+      const requestedUrl = new URL(requestedRoute, `${surfaceUrl}/`).toString();
+      void window.largerCanvas.navigate(requestedUrl).catch((error: Error) => setRequestError(error.message));
+      return;
+    }
+    requestedRouteRef.current = null;
     loadedSurfaceRef.current = surfaceUrl;
-    void request.catch((error: Error) => setRequestError(error.message));
+    const initialUrl = new URL(route, `${surfaceUrl}/`).toString();
+    void window.largerCanvas.load(initialUrl).catch((error: Error) => setRequestError(error.message));
   }, [canvasReady, route, surfaceUrl, workspace]);
+
+  useEffect(() => window.largerCanvas?.onNavigation((url) => {
+    setCurrentUrl(url);
+    if (!surfaceUrl) return;
+    const current = new URL(url);
+    if (current.origin !== new URL(surfaceUrl).origin) return;
+    const relative = `${current.pathname}${current.search}${current.hash}`;
+    setRoute(relative);
+    setRouteDraft(relative);
+  }), [surfaceUrl]);
 
   const start = useCallback(async () => {
     setRequestError(null);
@@ -228,6 +248,8 @@ export function App() {
   const stop = useCallback(async () => {
     window.largerCanvas?.hide();
     loadedSurfaceRef.current = null;
+    requestedRouteRef.current = null;
+    setCurrentUrl(null);
     setSession((current) => ({ ...current, phase: "stopping" }));
     try {
       const health = await fetchJson<{ capability: string }>("/api/health");
@@ -247,6 +269,7 @@ export function App() {
 
   const navigateToRoute = useCallback((nextRoute: string) => {
     const normalized = nextRoute.startsWith("/") ? nextRoute : `/${nextRoute}`;
+    requestedRouteRef.current = normalized;
     setRoute(normalized);
     setRouteDraft(normalized);
     setWorkspace("canvas");
@@ -286,7 +309,7 @@ export function App() {
         onViewportChange={setViewport}
         onReload={() => {
           if (!surfaceUrl || !window.largerCanvas) return;
-          const url = new URL(route, `${surfaceUrl}/`).toString();
+          const url = currentUrl ?? new URL(route, `${surfaceUrl}/`).toString();
           void window.largerCanvas.navigate(url).catch((error: Error) => setRequestError(error.message));
         }}
         canStart={Boolean(project && apiReady && sessionConfigReady)}
@@ -328,19 +351,25 @@ export function App() {
       </header>
 
       <SidebarProvider
+        keyboardShortcut={false}
         className="min-h-0 flex-1"
         style={{ "--sidebar-width": "100%" } as CSSProperties}
       >
-        <ResizablePanelGroup orientation="horizontal" className="min-h-0">
-          <ResizablePanel defaultSize="18%" minSize="15%" maxSize="27%">
+        <ResizablePanelGroup
+          id="studio-layout"
+          orientation="horizontal"
+          resizeTargetMinimumSize={{ coarse: 28, fine: 12 }}
+          className="min-h-0"
+        >
+          <ResizablePanel id="navigation" defaultSize="18%" minSize={210} maxSize={360} groupResizeBehavior="preserve-pixel-size">
             <StudioNavigation project={project} phase={session.phase} workspace={workspace} onWorkspaceChange={changeWorkspace} />
           </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel defaultSize="61%" minSize="42%">
+          <ResizableHandle withHandle />
+          <ResizablePanel id="workspace" defaultSize="61%" minSize={520}>
             <section className="h-full min-h-0 bg-background">{renderWorkspace()}</section>
           </ResizablePanel>
-          <ResizableHandle />
-          <ResizablePanel defaultSize="21%" minSize="17%" maxSize="30%">
+          <ResizableHandle withHandle />
+          <ResizablePanel id="inspector" defaultSize="21%" minSize={250} maxSize={420} groupResizeBehavior="preserve-pixel-size">
             <Inspector workspace={workspace} selection={selection} session={session} />
           </ResizablePanel>
         </ResizablePanelGroup>

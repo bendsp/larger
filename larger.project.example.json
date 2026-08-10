@@ -6,7 +6,7 @@
     "root": "../my-app",
     "entryRoute": "/",
     "dev": {
-      "command": ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "{port}"],
+      "command": ["npm", "run", "dev", "--", "--host", "{host}", "--port", "{port}"],
       "host": "127.0.0.1",
       "preferredPort": 3100
     },

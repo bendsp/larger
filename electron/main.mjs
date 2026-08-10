@@ -179,6 +179,15 @@ ipcMain.on("canvas:bounds", (event, bounds) => {
   canvasView.setBounds(safe);
 });
 
+ipcMain.on("canvas:show", (event) => {
+  try {
+    assertTrustedStudioSender(event);
+    if (canvasView && allowedCanvasOrigin) attachCanvas();
+  } catch {
+    // Ignore messages from navigated or destroyed renderers.
+  }
+});
+
 ipcMain.on("canvas:hide", (event) => {
   try {
     assertTrustedStudioSender(event);

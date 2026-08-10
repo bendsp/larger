@@ -140,7 +140,10 @@ export interface SessionStartOptions {
 export interface ManagedServerSnapshot {
   mode: "managed";
   configured: ProjectManifest["project"]["dev"];
-  activeUrl: string | null;
+  active: {
+    url: string;
+    command: string[];
+  } | null;
 }
 
 export interface SessionSnapshot {

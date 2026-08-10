@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectManifest } from "../src/contracts.js";
 import type { EditorAdapterFactory } from "./editor-adapter.js";
-import { resolveServerLaunch, SessionManager } from "./session-manager.js";
+import { resolveServerCommand, resolveServerLaunch, SessionManager } from "./session-manager.js";
 
 const manifest: ProjectManifest = {
   schemaVersion: 1,
@@ -50,16 +50,20 @@ test("session state exposes only normalized data from an injected adapter", asyn
   assert.equal(snapshot.adapter.id, "fixture-adapter");
   assert.equal(snapshot.adapter.capabilities.selection, "studio");
   assert.deepEqual(snapshot.server.configured, manifest.project.dev);
-  assert.equal(snapshot.server.activeUrl, null);
+  assert.equal(snapshot.server.active, null);
   assert.equal(snapshot.surface, null);
   assert.equal("proxyUrl" in snapshot, false);
   assert.equal("engineVersion" in snapshot, false);
 });
 
 test("server launch options only override the loopback host and preferred port", () => {
+  const configurable = {
+    ...manifest.project.dev,
+    command: ["npm", "run", "dev", "--", "--host", "{host}", "--port", "{port}"],
+  };
   assert.deepEqual(
-    resolveServerLaunch(manifest.project.dev, { host: "localhost", preferredPort: 4200 }),
-    { ...manifest.project.dev, host: "localhost", preferredPort: 4200 },
+    resolveServerLaunch(configurable, { host: "localhost", preferredPort: 4200 }),
+    { ...configurable, host: "localhost", preferredPort: 4200 },
   );
   assert.throws(
     () => resolveServerLaunch(manifest.project.dev, { host: "0.0.0.0" as "localhost" }),
@@ -68,5 +72,20 @@ test("server launch options only override the loopback host and preferred port",
   assert.throws(
     () => resolveServerLaunch(manifest.project.dev, { preferredPort: 80 }),
     /between 1024 and 65535/,
+  );
+  assert.throws(
+    () => resolveServerLaunch(manifest.project.dev, { host: "localhost" }),
+    /requires a \{host\} placeholder/,
+  );
+});
+
+test("server command resolves the selected host and allocated port", () => {
+  assert.deepEqual(
+    resolveServerCommand({
+      ...manifest.project.dev,
+      host: "localhost",
+      command: ["dev", "--host", "{host}", "--port={port}"],
+    }, 4201),
+    ["dev", "--host", "localhost", "--port=4201"],
   );
 });

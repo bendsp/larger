@@ -1,5 +1,4 @@
 import {
-  BlocksIcon,
   ComponentIcon,
   ImageIcon,
   MonitorPlayIcon,
@@ -16,33 +15,19 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
 import type { Workspace } from "./types";
+import { phaseLabel } from "./status";
 
 interface NavigationItem {
   id: Workspace;
   label: string;
   icon: LucideIcon;
-  count?: number;
-}
-
-function phaseLabel(phase: SessionPhase): string {
-  const labels: Record<SessionPhase, string> = {
-    idle: "Offline",
-    preparing: "Preparing",
-    "starting-target": "Starting",
-    "starting-adapter": "Attaching",
-    ready: "Running",
-    stopping: "Stopping",
-    error: "Error",
-  };
-  return labels[phase];
+  count?: number | string;
 }
 
 export function StudioNavigation({
@@ -57,14 +42,14 @@ export function StudioNavigation({
   onWorkspaceChange: (workspace: Workspace) => void;
 }) {
   const library: NavigationItem[] = [
-    { id: "components", label: "Components", icon: ComponentIcon, count: project?.components.length },
-    { id: "design-system", label: "Design system", icon: PaletteIcon, count: project?.brand.tokens.length },
-    { id: "assets", label: "Assets", icon: ImageIcon, count: project?.assets.length },
+    { id: "components", label: "Components", icon: ComponentIcon, count: project ? `${project.components.length}${project.truncated.files ? "+" : ""}` : undefined },
+    { id: "design-system", label: "Design system", icon: PaletteIcon, count: project ? `${project.brand.tokens.length}${project.truncated.css ? "+" : ""}` : undefined },
+    { id: "assets", label: "Assets", icon: ImageIcon, count: project ? `${project.assets.length}${project.truncated.assets ? "+" : ""}` : undefined },
   ];
   const projectViews: NavigationItem[] = [
     { id: "canvas", label: "Canvas", icon: MonitorPlayIcon },
-    { id: "routes", label: "Routes", icon: RouteIcon, count: project?.routes.length },
-    { id: "servers", label: "Servers", icon: ServerIcon, count: phase === "idle" ? undefined : 1 },
+    { id: "routes", label: "Routes", icon: RouteIcon, count: project ? `${project.routes.length}${project.truncated.files ? "+" : ""}` : undefined },
+    { id: "servers", label: "Servers", icon: ServerIcon },
   ];
 
   const renderGroup = (label: string, items: NavigationItem[]) => (
@@ -77,6 +62,7 @@ export function StudioNavigation({
             return (
               <SidebarMenuItem key={item.id}>
                 <SidebarMenuButton
+                  aria-current={workspace === item.id ? "page" : undefined}
                   isActive={workspace === item.id}
                   onClick={() => onWorkspaceChange(item.id)}
                 >
@@ -94,20 +80,6 @@ export function StudioNavigation({
 
   return (
     <Sidebar collapsible="none" className="w-full border-r-0">
-      <SidebarHeader className="p-3">
-        <div className="flex items-center gap-2.5 px-1 py-1">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <BlocksIcon className="size-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{project?.name ?? "Reading project"}</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {project ? `${project.framework} · ${project.git.branch}` : "Larger"}
-            </p>
-          </div>
-        </div>
-      </SidebarHeader>
-      <Separator />
       <SidebarContent>
         {renderGroup("Library", library)}
         {renderGroup("Project", projectViews)}

@@ -1,10 +1,10 @@
 import type { FormEvent, RefObject } from "react";
 import {
+  ArrowRightIcon,
   BoxIcon,
   BracesIcon,
   CircleStopIcon,
   ComponentIcon,
-  ExternalLinkIcon,
   FileCodeIcon,
   ImageIcon,
   LaptopIcon,
@@ -47,11 +47,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import {
   Item,
   ItemActions,
@@ -67,18 +63,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { StudioSelection, Viewport } from "./types";
+import { phaseLabel } from "./status";
+import { formatBytes } from "./format";
 
 const VIEWPORTS: Record<Viewport, { label: string; width: number | null; icon: typeof MonitorIcon }> = {
   desktop: { label: "Desktop", width: null, icon: MonitorIcon },
   tablet: { label: "Tablet", width: 820, icon: TabletIcon },
   mobile: { label: "Mobile", width: 390, icon: SmartphoneIcon },
 };
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function WorkspaceHeader({
   icon: Icon,
@@ -117,6 +109,10 @@ function EmptyInventory({ label }: { label: string }) {
   );
 }
 
+function PartialScanBadge({ visible }: { visible: boolean }) {
+  return visible ? <Badge variant="outline">Partial scan</Badge> : null;
+}
+
 export function ComponentsWorkspace({
   project,
   selection,
@@ -127,7 +123,7 @@ export function ComponentsWorkspace({
   onSelect: (selection: StudioSelection) => void;
 }) {
   const groups = project ? [
-    { label: "Design system", items: project.components.filter((item) => item.family === "ui") },
+    { label: "UI components", items: project.components.filter((item) => item.family === "ui") },
     { label: "Project", items: project.components.filter((item) => item.family === "project") },
   ] : [];
 
@@ -137,6 +133,7 @@ export function ComponentsWorkspace({
         icon={ComponentIcon}
         title="Components"
         description="Reusable React building blocks discovered in the project"
+        actions={<PartialScanBadge visible={Boolean(project?.truncated.files)} />}
       />
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 p-6">
@@ -151,7 +148,7 @@ export function ComponentsWorkspace({
                   <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.label}</h2>
                   <span className="text-xs tabular-nums text-muted-foreground">{group.items.length}</span>
                 </div>
-                <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+                <ItemGroup className="grid grid-cols-2 gap-3 xl:grid-cols-3">
                   {group.items.map((component) => (
                     <ComponentItem
                       component={component}
@@ -160,7 +157,7 @@ export function ComponentsWorkspace({
                       onSelect={() => onSelect({ kind: "component", value: component })}
                     />
                   ))}
-                </div>
+                </ItemGroup>
               </section>
             )
           ))}
@@ -181,11 +178,17 @@ function ComponentItem({
 }) {
   return (
     <Item
-      render={<button type="button" />}
+      role="listitem"
       variant={isSelected ? "muted" : "outline"}
-      className="min-w-0 flex-nowrap text-left hover:bg-muted/50"
-      onClick={onSelect}
+      className="relative min-w-0 flex-nowrap text-left hover:bg-muted/50"
     >
+      <Button
+        aria-label={`Inspect ${component.name}`}
+        aria-pressed={isSelected}
+        className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
+        variant="ghost"
+        onClick={onSelect}
+      />
       <ItemMedia variant="icon" className="size-9 rounded-lg border bg-background">
         <ComponentIcon />
       </ItemMedia>
@@ -193,7 +196,6 @@ function ComponentItem({
         <ItemTitle>{component.name}</ItemTitle>
         <ItemDescription className="truncate font-mono text-xs">{component.file}</ItemDescription>
       </ItemContent>
-      <ItemActions><Badge variant="outline">{component.family}</Badge></ItemActions>
     </Item>
   );
 }
@@ -215,6 +217,7 @@ export function DesignSystemWorkspace({
         icon={PaletteIcon}
         title="Design system"
         description="Colors, typography, Tailwind, and ShadCN metadata from source"
+        actions={<PartialScanBadge visible={Boolean(project?.truncated.css)} />}
       />
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
@@ -268,7 +271,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b pb-2 last:border-0 last:pb-0">
       <span className="text-muted-foreground">{label}</span>
-      <span className="truncate font-mono text-xs">{value}</span>
+      <span className="truncate font-mono text-xs" title={value}>{value}</span>
     </div>
   );
 }
@@ -325,7 +328,12 @@ export function AssetsWorkspace({
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <WorkspaceHeader icon={ImageIcon} title="Assets" description="Images, icons, fonts, and files available to designs" />
+      <WorkspaceHeader
+        icon={ImageIcon}
+        title="Assets"
+        description="Images, icons, fonts, and files available to designs"
+        actions={<PartialScanBadge visible={Boolean(project?.truncated.assets)} />}
+      />
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto w-full max-w-5xl p-6">
           {!project ? <Skeleton className="h-80" /> : project.assets.length === 0 ? <EmptyInventory label="Assets" /> : (
@@ -347,11 +355,17 @@ export function AssetsWorkspace({
 function AssetItem({ asset, isSelected, onSelect }: { asset: ProjectAsset; isSelected: boolean; onSelect: () => void }) {
   return (
     <Item
-      render={<button type="button" />}
+      role="listitem"
       variant={isSelected ? "muted" : "outline"}
-      className="min-w-0 flex-nowrap text-left hover:bg-muted/50"
-      onClick={onSelect}
+      className="relative min-w-0 flex-nowrap text-left hover:bg-muted/50"
     >
+      <Button
+        aria-label={`Inspect ${asset.name}`}
+        aria-pressed={isSelected}
+        className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
+        variant="ghost"
+        onClick={onSelect}
+      />
       <ItemMedia variant={asset.previewUrl ? "image" : "icon"} className="size-10 rounded-md border bg-muted/40">
         {asset.previewUrl ? <img src={asset.previewUrl} alt="" loading="lazy" /> : <FileCodeIcon />}
       </ItemMedia>
@@ -376,35 +390,55 @@ export function RoutesWorkspace({
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <WorkspaceHeader icon={RouteIcon} title="Routes" description="Pages discovered in the project router" />
+      <WorkspaceHeader
+        icon={RouteIcon}
+        title="Routes"
+        description="Pages discovered in the project router"
+        actions={<PartialScanBadge visible={Boolean(project?.truncated.files)} />}
+      />
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto w-full max-w-4xl p-6">
           {!project ? <Skeleton className="h-72" /> : project.routes.length === 0 ? <EmptyInventory label="Routes" /> : (
             <ItemGroup className="gap-2">
               {project.routes.map((route) => (
                 <Item
+                  role="listitem"
                   variant={selection?.kind === "route" && selection.value.file === route.file ? "muted" : "outline"}
                   key={route.file}
-                  className="flex-nowrap"
-                  onClick={() => onSelect({ kind: "route", value: route })}
+                  className="relative flex-nowrap"
                 >
+                  <Button
+                    aria-label={`Inspect route ${route.path}`}
+                    aria-pressed={selection?.kind === "route" && selection.value.file === route.file}
+                    className="absolute inset-0 z-10 h-auto w-auto rounded-lg p-0 hover:bg-transparent"
+                    variant="ghost"
+                    onClick={() => onSelect({ kind: "route", value: route })}
+                  />
                   <ItemMedia variant="icon"><RouteIcon /></ItemMedia>
                   <ItemContent className="min-w-0">
                     <ItemTitle className="font-mono">{route.path}</ItemTitle>
                     <ItemDescription className="truncate font-mono text-xs">{route.file}</ItemDescription>
                   </ItemContent>
-                  <ItemActions>
+                  <ItemActions className="relative z-20">
                     <Badge variant="outline">{route.kind}</Badge>
-                    <Button
-                      aria-label={`Open ${route.path} in canvas`}
-                      disabled={route.kind === "dynamic"}
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpen(route.path);
-                      }}
-                    ><ExternalLinkIcon /></Button>
+                    <Tooltip>
+                      <TooltipTrigger render={
+                        <Button
+                          aria-disabled={route.kind === "dynamic"}
+                          aria-label={`Open ${route.path} in canvas`}
+                          size="icon-sm"
+                          variant="ghost"
+                          onClick={() => {
+                            if (route.kind !== "dynamic") onOpen(route.path);
+                          }}
+                        />
+                      }>
+                        <MonitorPlayIcon />
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {route.kind === "dynamic" ? "Dynamic routes need fixture data" : "Open in canvas"}
+                      </TooltipContent>
+                    </Tooltip>
                   </ItemActions>
                 </Item>
               ))}
@@ -436,7 +470,7 @@ export function ServersWorkspace({
   const running = session.phase === "ready";
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <WorkspaceHeader icon={ServerIcon} title="Servers" description="Launch, attach, inspect, and stop the project runtime" />
+      <WorkspaceHeader icon={ServerIcon} title="Servers" description="Launch, inspect, and stop the managed project runtime" />
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-6">
           <Card>
@@ -445,7 +479,7 @@ export function ServersWorkspace({
               <CardDescription>Managed in an isolated working copy for this session.</CardDescription>
               <CardAction>
                 <Badge variant={running ? "default" : session.phase === "error" ? "destructive" : "outline"}>
-                  {running ? "Running" : session.phase === "idle" ? "Stopped" : session.phase}
+                  {phaseLabel(session.phase)}
                 </Badge>
               </CardAction>
             </CardHeader>
@@ -455,35 +489,36 @@ export function ServersWorkspace({
                 <InputGroup>
                   <InputGroupInput
                     id="server-address"
-                    disabled={running || isBusy}
+                    readOnly={running || isBusy}
+                    aria-readonly={running || isBusy}
                     inputMode="url"
                     spellCheck={false}
                     value={address}
                     onChange={(event) => onAddressChange(event.target.value)}
                   />
-                  <InputGroupAddon align="inline-end">
-                    <ServerIcon />
-                  </InputGroupAddon>
                 </InputGroup>
                 <FieldDescription>Use localhost or 127.0.0.1 with a preferred port. If occupied, Larger chooses the next free port.</FieldDescription>
               </Field>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Fact label="Command" value={session.server.configured.command.join(" ")} />
+              <div className="flex flex-col gap-3">
+                <Fact
+                  label={session.server.active ? "Command" : "Command template"}
+                  value={(session.server.active?.command ?? session.server.configured.command).join(" ")}
+                />
                 <Fact label="Editor" value={`${session.adapter.name}${session.adapter.version ? ` ${session.adapter.version}` : ""}`} />
-                <Fact label="Active target" value={session.server.activeUrl ?? "—"} />
+                <Fact label="Active target" value={session.server.active?.url ?? "—"} />
                 <Fact label="Editor surface" value={session.surface?.url ?? "—"} />
               </div>
             </CardContent>
             <CardFooter className="justify-between gap-3">
-              <p className="text-xs text-muted-foreground">Only processes started by Larger can be killed here.</p>
+              <p className="text-xs text-muted-foreground">Only processes started by Larger can be stopped here.</p>
               {running || isStarting || session.phase === "stopping" ? (
                 <Button variant={running ? "destructive" : "outline"} disabled={session.phase === "stopping"} onClick={onStop}>
                   <CircleStopIcon data-icon="inline-start" />
-                  {session.phase === "stopping" ? "Stopping" : isStarting ? "Cancel launch" : "Kill server"}
+                  {session.phase === "stopping" ? "Stopping" : isStarting ? "Cancel launch" : "Stop server"}
                 </Button>
               ) : (
                 <Button disabled={!canStart || isBusy} onClick={onStart}>
-                  <PlayIcon data-icon="inline-start" />{isBusy ? "Starting" : "Launch and attach"}
+                  <PlayIcon data-icon="inline-start" />{isBusy ? "Starting" : "Launch session"}
                 </Button>
               )}
             </CardFooter>
@@ -511,7 +546,7 @@ export function ServersWorkspace({
                 {session.changes.length === 0 ? <p className="text-sm text-muted-foreground">No sandbox changes.</p> : (
                   <ItemGroup className="gap-1">
                     {session.changes.map((change) => (
-                      <Item size="xs" key={change.file}>
+                      <Item role="listitem" size="xs" key={change.file}>
                         <ItemMedia><Badge variant="outline">{change.status[0].toUpperCase()}</Badge></ItemMedia>
                         <ItemContent><ItemTitle className="font-mono text-xs">{change.file}</ItemTitle></ItemContent>
                       </Item>
@@ -572,10 +607,16 @@ export function CanvasWorkspace({
               onChange={(event) => onRouteDraftChange(event.target.value)}
             />
             <InputGroupAddon><RouteIcon /></InputGroupAddon>
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton aria-label="Open route" disabled={!canvasReady} size="icon-xs" type="submit">
+                <ArrowRightIcon />
+              </InputGroupButton>
+            </InputGroupAddon>
           </InputGroup>
         </form>
         <div className="flex flex-1 justify-center">
           <ToggleGroup
+            aria-label="Viewport size"
             value={[viewport]}
             variant="outline"
             size="sm"
@@ -602,7 +643,7 @@ export function CanvasWorkspace({
       </header>
       <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-[radial-gradient(circle_at_center,var(--border)_1px,transparent_1px)] bg-size-[16px_16px] p-6">
         <div
-          className="relative h-full min-h-[480px] max-w-full overflow-hidden rounded-lg border bg-white shadow-2xl transition-[width]"
+          className="relative h-full min-h-[480px] max-w-full overflow-hidden border bg-background"
           style={{ width: viewportWidth ? `${viewportWidth}px` : "100%" }}
         >
           <div className="relative size-full min-h-0" ref={canvasMountRef}>

@@ -44,7 +44,19 @@ export function resolveServerLaunch(
   if (!Number.isInteger(preferredPort) || preferredPort < 1024 || preferredPort > 65_535) {
     throw new Error("Server port must be an integer between 1024 and 65535");
   }
+  if (host !== configured.host && !configured.command.some((argument) => argument.includes("{host}"))) {
+    throw new Error("Changing the server host requires a {host} placeholder in the dev command");
+  }
   return { ...configured, host, preferredPort };
+}
+
+export function resolveServerCommand(
+  dev: ProjectManifest["project"]["dev"],
+  port: number,
+): string[] {
+  return dev.command.map((argument) => argument
+    .replaceAll("{host}", dev.host)
+    .replaceAll("{port}", String(port)));
 }
 
 async function waitForHttp(
@@ -73,6 +85,7 @@ export class SessionManager {
   private readonly adapter: EditorAdapter;
   private phase: SessionSnapshot["phase"] = "idle";
   private targetUrl: string | null = null;
+  private activeCommand: string[] | null = null;
   private surface: EditorSurface | null = null;
   private runtimeRoot: string | null = null;
   private error: string | null = null;
@@ -178,8 +191,8 @@ export class SessionManager {
       const port = await findAvailablePort(dev.preferredPort, dev.host);
       this.assertActiveGeneration(generation);
       this.targetUrl = `http://${dev.host}:${port}`;
-      const [command, ...configuredArgs] = dev.command;
-      const args = configuredArgs.map((argument) => argument.replaceAll("{port}", String(port)));
+      const [command, ...args] = resolveServerCommand(dev, port);
+      this.activeCommand = [command, ...args];
       this.phase = "starting-target";
       this.addLog("studio", `Starting target on ${this.targetUrl}`);
 
@@ -266,6 +279,9 @@ export class SessionManager {
       throw new Error(this.cleanupError);
     }
     this.cleanupError = null;
+    this.targetUrl = null;
+    this.activeCommand = null;
+    this.surface = null;
   }
 
   async stop(): Promise<SessionSnapshot> {
@@ -285,8 +301,6 @@ export class SessionManager {
       return await this.snapshot();
     }
     this.phase = "idle";
-    this.targetUrl = null;
-    this.surface = null;
     this.error = null;
     return await this.snapshot();
   }
@@ -309,7 +323,9 @@ export class SessionManager {
       server: {
         mode: "managed",
         configured: { ...this.manifest.project.dev, command: [...this.manifest.project.dev.command] },
-        activeUrl: this.targetUrl,
+        active: this.targetUrl && this.activeCommand
+          ? { url: this.targetUrl, command: [...this.activeCommand] }
+          : null,
       },
       surface: this.surface,
       error: this.error,

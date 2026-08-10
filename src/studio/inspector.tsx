@@ -6,7 +6,6 @@ import {
   ServerIcon,
 } from "lucide-react";
 import type { SessionSnapshot } from "@/contracts";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Empty,
@@ -18,18 +17,17 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { StudioSelection, Workspace } from "./types";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { phaseLabel } from "./status";
+import { formatBytes } from "./format";
 
 function Property({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="grid grid-cols-[80px_minmax(0,1fr)] gap-3 py-2 text-xs">
+    <div className="flex flex-col gap-1 py-2 text-xs">
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className={`m-0 min-w-0 break-words text-right ${mono ? "font-mono" : ""}`}>{value}</dd>
+      <dd
+        className={`m-0 min-w-0 text-left ${mono ? "overflow-x-auto whitespace-nowrap font-mono" : "break-words"}`}
+        title={value}
+      >{value}</dd>
     </div>
   );
 }
@@ -76,7 +74,6 @@ export function Inspector({
           <h2 className="text-sm font-medium">Inspector</h2>
           <p className="text-xs text-muted-foreground">Selection details</p>
         </div>
-        {selection && <Badge variant="outline">{selection.kind}</Badge>}
       </header>
       <div className="min-h-0 flex-1">
         {!selection ? <EmptyInspector workspace={workspace} adapterName={session.adapter.name} /> : (
@@ -167,9 +164,13 @@ export function Inspector({
                 </div>
                 <Separator />
                 <InspectorSection title="Runtime">
-                  <Property label="Status" value={session.phase} />
-                  <Property label="Target" value={session.server.activeUrl ?? "Not running"} mono />
-                  <Property label="Command" value={session.server.configured.command.join(" ")} mono />
+                  <Property label="Status" value={phaseLabel(session.phase)} />
+                  <Property label="Target" value={session.server.active?.url ?? "Not running"} mono />
+                  <Property
+                    label={session.server.active ? "Command" : "Command template"}
+                    value={(session.server.active?.command ?? session.server.configured.command).join(" ")}
+                    mono
+                  />
                   <Property label="Adapter" value={session.adapter.name} />
                 </InspectorSection>
               </>
