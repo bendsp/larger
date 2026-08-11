@@ -82,6 +82,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { useProjects } from "@/projects/use-projects";
 import { ChangeWorkspace, useChanges } from "@/changes";
 import { RuntimeCanvasWorkspace, RuntimeWorkspace, useRuntime } from "@/runtime";
+import { ApplicationDegradedBanner, ApplicationLifecycleScreen } from "@/desktop/application-lifecycle";
+import { projectServiceAvailable } from "@/desktop/application-state";
+import { useApplicationLifecycle } from "@/desktop/use-application-lifecycle";
 
 type ProjectSection = "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "canvas" | "servers";
 
@@ -97,13 +100,13 @@ const sections = [
 ] satisfies Array<{ id: ProjectSection; label: string; icon: typeof LayoutDashboardIcon }>;
 
 function LoadingScreen() {
-  return <main className="grid h-screen place-items-center bg-background"><Spinner className="size-5" /></main>;
+  return <main className="grid h-full place-items-center bg-background"><Spinner className="size-5" /></main>;
 }
 
 function Welcome({ project }: { project: ReturnType<typeof useProjects> }) {
   const recents = project.snapshot?.recentProjects ?? [];
   return (
-    <main className="flex h-screen min-h-0 bg-muted/30">
+    <main className="flex h-full min-h-0 bg-muted/30">
       <section className="m-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-12">
         <div className="flex flex-col gap-3">
           <div className="flex size-11 items-center justify-center rounded-xl border bg-background shadow-xs">
@@ -223,7 +226,7 @@ function SetupProject({ pending, project }: { pending: PendingProject; project: 
   };
 
   return (
-    <main className="flex h-screen min-h-0 bg-muted/30">
+    <main className="flex h-full min-h-0 bg-muted/30">
       <Card className="m-auto max-h-[calc(100vh-3rem)] w-full max-w-xl overflow-hidden">
         <CardHeader>
           <div className="mb-2 flex size-10 items-center justify-center rounded-lg border bg-background"><Settings2Icon className="size-4" /></div>
@@ -488,9 +491,8 @@ function ProjectStudio({ active, project }: { active: ActiveProject; project: Re
     const stored = active.personalState.selectedRuntimeProfile;
     if (stored) setSelectedRuntimeProfile(stored);
   }, [active.personalState.selectedRuntimeProfile]);
-  useEffect(() => window.largerCanvas?.hide(), [active.identity.instanceKey, section]);
   return (
-    <SidebarProvider className="h-screen min-h-0 overflow-hidden">
+    <SidebarProvider className="h-full min-h-0 overflow-hidden">
       <Sidebar
         collapsible="icon"
         onMouseEnter={() => setSidebarHovered(true)}
@@ -569,11 +571,34 @@ function CanvasWithSidebarAwareness({
   return <RuntimeCanvasWorkspace {...props} suspended={suspended || sidebarObscuresCanvas} />;
 }
 
-export function App() {
+function ProjectApplication() {
   const project = useProjects();
   const snapshot = project.snapshot;
   if (!snapshot) return <LoadingScreen />;
   if (snapshot.pending) return <SetupProject key={snapshot.pending.canonicalPath} pending={snapshot.pending} project={project} />;
   if (snapshot.active) return <ProjectStudio key={snapshot.active.identity.instanceKey} active={snapshot.active} project={project} />;
   return <Welcome project={project} />;
+}
+
+export function App() {
+  const lifecycle = useApplicationLifecycle();
+  const snapshot = lifecycle.snapshot;
+
+  if (!snapshot || !projectServiceAvailable(snapshot)) {
+    return <ApplicationLifecycleScreen lifecycle={lifecycle} />;
+  }
+
+  return (
+    <div className="flex h-screen min-h-0 flex-col bg-background">
+      {(snapshot.phase === "degraded" || lifecycle.problem) && (
+        <ApplicationDegradedBanner
+          snapshot={snapshot}
+          problem={lifecycle.problem}
+          busy={lifecycle.busy}
+          onRetry={() => void lifecycle.retry()}
+        />
+      )}
+      <div className="min-h-0 flex-1"><ProjectApplication /></div>
+    </div>
+  );
 }

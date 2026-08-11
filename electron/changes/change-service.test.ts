@@ -145,6 +145,23 @@ async function makeTestTreeWritable(root: string): Promise<void> {
   for (const child of await readdir(root)) await makeTestTreeWritable(path.join(root, child));
 }
 
+test("dispose closes the change service to new operations and subscriptions", async (context) => {
+  const fixture = await createFixture(context, { "src/app.tsx": "export default 1;\n" });
+
+  await fixture.service.snapshot(fixture.active.generation);
+  await fixture.service.dispose();
+  await fixture.service.dispose();
+
+  await assert.rejects(
+    fixture.service.snapshot(fixture.active.generation),
+    /shutting down/,
+  );
+  assert.throws(
+    () => fixture.service.subscribe(() => undefined),
+    /shutting down/,
+  );
+});
+
 async function scanAndSelectAll(fixture: Fixture): Promise<{
   readonly changeSetId: string;
   readonly revision: number;

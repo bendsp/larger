@@ -112,6 +112,10 @@ export interface RuntimeServiceOptions {
   readonly id?: () => string;
 }
 
+export interface RuntimeOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
 interface LiveSession {
   readonly public: RuntimeSession | null;
   readonly surfaceUrl: string;
@@ -269,19 +273,27 @@ export class RuntimeService {
     return this.live !== null || this.state.operation !== null;
   }
 
-  start(generation: number, profileName: string, expectedRevision: number): Promise<RuntimeOperationResult> {
+  start(
+    generation: number,
+    profileName: string,
+    expectedRevision: number,
+    options: RuntimeOperationOptions = {},
+  ): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const operation = this.begin("start", "preparing-workspace", generation, expectedRevision);
     if (!operation) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
-    return this.runOperation((signal) => this.startManaged(generation, profileName, signal));
+    return this.runOperation((signal) => this.startManaged(generation, profileName, signal), options.signal);
   }
 
-  attach(generation: number, value: string, expectedRevision: number): Promise<RuntimeOperationResult> {
+  attach(generation: number, value: string, expectedRevision: number, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const operation = this.begin("attach", "validating-attach", generation, expectedRevision);
     if (!operation) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
-    return this.runOperation((signal) => this.attachExternal(generation, value, signal));
+    return this.runOperation((signal) => this.attachExternal(generation, value, signal), options.signal);
   }
 
-  discover(generation: number, expectedRevision: number): Promise<RuntimeOperationResult> {
+  discover(generation: number, expectedRevision: number, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const operation = this.begin("discover", "validating-attach", generation, expectedRevision);
     if (!operation) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
     return this.runOperation(async (signal) => {
@@ -298,10 +310,11 @@ export class RuntimeService {
         discovery: { requestId: operation.id, completedAt: this.now().toISOString(), candidates },
         phase: this.live?.public?.mode === "managed" ? "ready-managed" : this.live?.public ? "ready-attached" : "idle",
       });
-    });
+    }, options.signal);
   }
 
-  stop(generation: number, sessionId: string, expectedRevision: number): Promise<RuntimeOperationResult> {
+  stop(generation: number, sessionId: string, expectedRevision: number, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.validateSessionMutation(generation, sessionId, expectedRevision);
     if (!active) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
     if (active.public.mode === "attached") {
@@ -313,10 +326,11 @@ export class RuntimeService {
     return this.runOperation(async (signal) => {
       await this.cleanupLive(signal);
       this.update({ phase: "idle" });
-    });
+    }, options.signal);
   }
 
-  detach(generation: number, sessionId: string, expectedRevision: number): Promise<RuntimeOperationResult> {
+  detach(generation: number, sessionId: string, expectedRevision: number, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.validateSessionMutation(generation, sessionId, expectedRevision);
     if (!active) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
     if (active.public.mode !== "attached") {
@@ -325,13 +339,15 @@ export class RuntimeService {
     }
     const operation = this.beginSessionOperation("detach", "stopping", generation, expectedRevision);
     if (!operation) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
-    return this.runOperation(async () => {
+    return this.runOperation(async (signal) => {
+      signal.throwIfAborted();
       this.live = null;
       this.update({ session: null, phase: "idle" });
-    });
+    }, options.signal);
   }
 
-  restart(generation: number, sessionId: string, expectedRevision: number): Promise<RuntimeOperationResult> {
+  restart(generation: number, sessionId: string, expectedRevision: number, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.validateSessionMutation(generation, sessionId, expectedRevision);
     if (!active) return Promise.resolve({ status: "completed", snapshot: this.snapshot() });
     if (active.public.mode !== "managed") {
@@ -344,10 +360,11 @@ export class RuntimeService {
     return this.runOperation(async (signal) => {
       await this.cleanupLive(signal);
       await this.startManaged(generation, profileName, signal);
-    });
+    }, options.signal);
   }
 
-  async cancel(generation: number, operationId: string): Promise<RuntimeOperationResult> {
+  async cancel(generation: number, operationId: string, options: RuntimeOperationOptions = {}): Promise<RuntimeOperationResult> {
+    options.signal?.throwIfAborted();
     const project = this.options.projects.current(generation);
     if (!project || project.generation !== generation) {
       this.fail(problem("stale-generation", "The project generation is stale.", this.state.phase));
@@ -671,16 +688,21 @@ export class RuntimeService {
     if (failures.length > 0) throw new AggregateError(failures, "Runtime cleanup was incomplete");
   }
 
-  private runOperation(run: (signal: AbortSignal) => Promise<void>): Promise<RuntimeOperationResult> {
+  private runOperation(
+    run: (signal: AbortSignal) => Promise<void>,
+    externalSignal?: AbortSignal,
+  ): Promise<RuntimeOperationResult> {
     const controller = this.operationController;
     if (!controller) throw new Error("Runtime operation controller is unavailable");
+    const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
     const task = (async (): Promise<RuntimeOperationResult> => {
       try {
-        await run(controller.signal);
+        signal.throwIfAborted();
+        await run(signal);
         this.finish(this.state.phase === "cancelled" ? "cancelled" : this.state.phase);
         return { status: "completed", snapshot: this.snapshot() };
       } catch (cause) {
-        if (isAbort(cause, controller.signal)) {
+        if (isAbort(cause, signal)) {
           await this.cleanupLive().catch((cleanupCause) => this.logs.diagnostic(errorMessage(cleanupCause)));
           this.finish("cancelled");
           return { status: "cancelled", snapshot: this.snapshot() };

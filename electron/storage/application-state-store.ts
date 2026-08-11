@@ -128,18 +128,22 @@ export class ApplicationStateStore {
     }), options);
   }
 
-  async removeRecent(instanceKey: string): Promise<ApplicationState> {
+  async removeRecent(instanceKey: string, options: AtomicJsonOperationOptions = {}): Promise<ApplicationState> {
     return this.store.update((state) => ({
       ...state,
       recentProjects: state.recentProjects.filter((recent) => recent.instanceKey !== instanceKey),
-    }));
+    }), options);
   }
 
-  async setPersonalState(instanceKey: string, personalState: ProjectPersonalState): Promise<ApplicationState> {
+  async setPersonalState(
+    instanceKey: string,
+    personalState: ProjectPersonalState,
+    options: AtomicJsonOperationOptions = {},
+  ): Promise<ApplicationState> {
     const normalized = decodePersonalState(personalState);
     return this.store.update((state) => ({
       ...state,
       personalStateByInstance: { ...state.personalStateByInstance, [instanceKey]: normalized },
-    }));
+    }), options);
   }
 }

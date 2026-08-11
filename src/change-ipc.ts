@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { ChangeSelection, ChangeSetSnapshot, RecoveryAction } from "./change-contracts";
-import type { IpcEnvelope } from "./project-ipc";
 
 export const CHANGE_IPC_CHANNELS = {
   snapshot: "changes:snapshot",
@@ -242,5 +241,3 @@ export const recoverInputSchema = z.object({
   transactionId: z.string().uuid(),
   action: z.enum(["roll-forward", "roll-back"]),
 }).strict();
-
-export type ChangeIpcEnvelope<T> = IpcEnvelope<T>;

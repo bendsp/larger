@@ -38,6 +38,10 @@ export interface SessionSwitchGuard {
   stopForProjectSwitch(): Promise<void>;
 }
 
+export interface ProjectOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface ProjectManagerDependencies {
   applicationState: ApplicationStateStore;
   trust: ProjectTrustStore;
@@ -169,8 +173,14 @@ export class ProjectManager {
     return this.snapshot();
   }
 
-  async openPath(projectPath: string, expectedInstanceKey?: string): Promise<ProjectOperationResult> {
-    const { generation, signal } = this.begin("opening");
+  async openPath(
+    projectPath: string,
+    expectedInstanceKey?: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ProjectOperationResult> {
+    const operation = this.begin("opening");
+    const { generation } = operation;
+    const signal = options.signal ? AbortSignal.any([operation.signal, options.signal]) : operation.signal;
     try {
       const detection = await this.detect(projectPath, { signal });
       signal.throwIfAborted();
@@ -258,30 +268,40 @@ export class ProjectManager {
     }
   }
 
-  async openRecent(instanceKey: string): Promise<ProjectOperationResult> {
+  async openRecent(
+    instanceKey: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const recent = this.state.recentProjects.find((entry) => entry.instanceKey === instanceKey);
     if (!recent) {
       this.update({ problem: { code: "missing", message: "That recent project is no longer listed.", recoverable: true } });
       return operationCompleted(this.snapshot());
     }
-    return this.openPath(recent.canonicalPath, recent.instanceKey);
+    return this.openPath(recent.canonicalPath, recent.instanceKey, options);
   }
 
-  async initialize(generation: number, manifestInput: unknown): Promise<ProjectOperationResult> {
+  async initialize(
+    generation: number,
+    manifestInput: unknown,
+    options: ProjectOperationOptions = {},
+  ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const pending = this.requirePending(generation);
     if (pending.reason === "unsupported-monorepo") {
       throw new Error("Workspace roots cannot be initialized until package selection is supported");
     }
     const transition = this.begin("initializing");
+    const signal = options.signal ? AbortSignal.any([transition.signal, options.signal]) : transition.signal;
     try {
       await this.initializeProject(pending.canonicalPath, manifestInput, {
-        signal: transition.signal,
-        shouldPublish: () => this.isCurrent(transition.generation),
+        signal,
+        shouldPublish: () => !signal.aborted && this.isCurrent(transition.generation),
       });
-      transition.signal.throwIfAborted();
-      return this.openPath(pending.canonicalPath);
+      signal.throwIfAborted();
+      return this.openPath(pending.canonicalPath, undefined, options);
     } catch (cause) {
-      if (transition.signal.aborted || !this.isCurrent(transition.generation)) {
+      if (signal.aborted || !this.isCurrent(transition.generation)) {
         return { status: "cancelled", snapshot: this.snapshot() };
       }
       this.update({
@@ -293,7 +313,12 @@ export class ProjectManager {
     }
   }
 
-  async setTrust(generation: number, decision: "trusted" | "denied"): Promise<ProjectOperationResult> {
+  async setTrust(
+    generation: number,
+    decision: "trusted" | "denied",
+    options: ProjectOperationOptions = {},
+  ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.requireActive(generation);
     if (decision === "denied") {
       const current = this.state.active;
@@ -317,7 +342,8 @@ export class ProjectManager {
       }
       return operationCompleted(this.snapshot());
     }
-    await this.trust.setDecision(active.identity, decision, this.now());
+    await this.trust.setDecision(active.identity, decision, this.now(), options);
+    options.signal?.throwIfAborted();
     const current = this.state.active;
     if (!this.isCurrent(generation) || !current || current.identity.instanceKey !== active.identity.instanceKey) {
       return { status: "cancelled", snapshot: this.snapshot() };
@@ -326,7 +352,12 @@ export class ProjectManager {
     return operationCompleted(this.snapshot());
   }
 
-  async updateManifest(generation: number, manifestInput: unknown): Promise<ProjectOperationResult> {
+  async updateManifest(
+    generation: number,
+    manifestInput: unknown,
+    options: ProjectOperationOptions = {},
+  ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.requireActive(generation);
     if (
       typeof manifestInput !== "object"
@@ -337,17 +368,19 @@ export class ProjectManager {
       throw new Error("Project settings cannot change the stable project ID");
     }
     const transition = this.begin("opening");
+    const signal = options.signal ? AbortSignal.any([transition.signal, options.signal]) : transition.signal;
     try {
       await this.updateProjectManifest(active.identity.canonicalPath, manifestInput, {
-        signal: transition.signal,
-        shouldPublish: () => this.isCurrent(transition.generation),
+        signal,
+        shouldPublish: () => !signal.aborted && this.isCurrent(transition.generation),
       });
+      signal.throwIfAborted();
       if (!this.isCurrent(transition.generation) || this.state.active?.identity.instanceKey !== active.identity.instanceKey) {
         return { status: "cancelled", snapshot: this.snapshot() };
       }
-      return this.openPath(active.identity.canonicalPath, active.identity.instanceKey);
+      return this.openPath(active.identity.canonicalPath, active.identity.instanceKey, options);
     } catch (cause) {
-      if (transition.signal.aborted || !this.isCurrent(transition.generation)) {
+      if (signal.aborted || !this.isCurrent(transition.generation)) {
         return { status: "cancelled", snapshot: this.snapshot() };
       }
       this.update({ transition: null, problem: problemFor(cause) });
@@ -355,7 +388,8 @@ export class ProjectManager {
     }
   }
 
-  async dismissPending(generation: number): Promise<ProjectOperationResult> {
+  async dismissPending(generation: number, options: ProjectOperationOptions = {}): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     this.requirePending(generation);
     this.controller?.abort();
     this.controller = new AbortController();
@@ -368,26 +402,30 @@ export class ProjectManager {
     return operationCompleted(this.snapshot());
   }
 
-  async refresh(generation: number): Promise<ProjectOperationResult> {
+  async refresh(generation: number, options: ProjectOperationOptions = {}): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.state.active?.generation === generation ? this.state.active : null;
-    if (active) return this.openPath(active.identity.canonicalPath, active.identity.instanceKey);
+    if (active) return this.openPath(active.identity.canonicalPath, active.identity.instanceKey, options);
     const pending = this.requirePending(generation);
-    return this.openPath(pending.canonicalPath);
+    return this.openPath(pending.canonicalPath, undefined, options);
   }
 
-  async close(generation: number): Promise<ProjectOperationResult> {
+  async close(generation: number, options: ProjectOperationOptions = {}): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     this.requireActive(generation);
     const nextGeneration = this.begin("opening");
+    const signal = options.signal ? AbortSignal.any([nextGeneration.signal, options.signal]) : nextGeneration.signal;
     try {
+      signal.throwIfAborted();
       await this.ensureSafeSwitch();
-      nextGeneration.signal.throwIfAborted();
+      signal.throwIfAborted();
       if (this.isCurrent(nextGeneration.generation)) {
         this.update({ active: null, pending: null, transition: null, problem: null });
         this.suspendedActive = null;
       }
       return operationCompleted(this.snapshot());
     } catch (cause) {
-      if (!nextGeneration.signal.aborted && this.isCurrent(nextGeneration.generation)) {
+      if (!signal.aborted && this.isCurrent(nextGeneration.generation)) {
         this.update({ transition: null, problem: {
           code: "switch-blocked",
           message: errorMessage(cause),
@@ -398,8 +436,13 @@ export class ProjectManager {
     }
   }
 
-  async removeRecent(instanceKey: string): Promise<ProjectOperationResult> {
-    const applicationState = await this.applicationState.removeRecent(instanceKey);
+  async removeRecent(
+    instanceKey: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
+    const applicationState = await this.applicationState.removeRecent(instanceKey, options);
+    options.signal?.throwIfAborted();
     this.update({ recentProjects: applicationState.recentProjects, problem: null });
     return operationCompleted(this.snapshot());
   }
@@ -407,9 +450,12 @@ export class ProjectManager {
   async updatePersonalState(
     generation: number,
     personalState: ProjectPersonalState,
+    options: ProjectOperationOptions = {},
   ): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.requireActive(generation);
-    const applicationState = await this.applicationState.setPersonalState(active.identity.instanceKey, personalState);
+    const applicationState = await this.applicationState.setPersonalState(active.identity.instanceKey, personalState, options);
+    options.signal?.throwIfAborted();
     const current = this.state.active;
     if (!this.isCurrent(generation) || !current || current.identity.instanceKey !== active.identity.instanceKey) {
       return { status: "cancelled", snapshot: this.snapshot() };
@@ -419,14 +465,17 @@ export class ProjectManager {
     return operationCompleted(this.snapshot());
   }
 
-  async prepareWorkspace(generation: number): Promise<ProjectOperationResult> {
+  async prepareWorkspace(generation: number, options: ProjectOperationOptions = {}): Promise<ProjectOperationResult> {
+    options.signal?.throwIfAborted();
     const active = this.requireActive(generation);
     if (active.trust !== "trusted") {
       this.update({ problem: { code: "not-trusted", message: "Trust this project before preparing its runtime workspace.", recoverable: true } });
       return operationCompleted(this.snapshot());
     }
     try {
+      options.signal?.throwIfAborted();
       await this.ensureSafeSwitch();
+      options.signal?.throwIfAborted();
     } catch (cause) {
       if (this.isCurrent(generation) && this.state.active?.identity.instanceKey === active.identity.instanceKey) {
         this.update({ problem: {
@@ -442,11 +491,12 @@ export class ProjectManager {
       return { status: "cancelled", snapshot: this.snapshot() };
     }
     const transition = this.begin("preparing-workspace");
+    const signal = options.signal ? AbortSignal.any([transition.signal, options.signal]) : transition.signal;
     try {
       const workspace = await this.workspaceFor(active.identity).stage(active.identity.canonicalPath, {
-        signal: transition.signal,
+        signal,
       });
-      transition.signal.throwIfAborted();
+      signal.throwIfAborted();
       if (this.isCurrent(transition.generation)) {
         const current = this.state.active;
         if (!current || current.identity.instanceKey !== active.identity.instanceKey) {
@@ -460,7 +510,7 @@ export class ProjectManager {
       }
       return operationCompleted(this.snapshot());
     } catch (cause) {
-      if (transition.signal.aborted || !this.isCurrent(transition.generation)) {
+      if (signal.aborted || !this.isCurrent(transition.generation)) {
         return { status: "cancelled", snapshot: this.snapshot() };
       }
       this.update({ transition: null, problem: {

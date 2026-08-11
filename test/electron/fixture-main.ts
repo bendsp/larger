@@ -1,10 +1,15 @@
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { randomUUID } from "node:crypto";
+import { app, BrowserWindow, ipcMain, WebContentsView } from "electron";
 import { CanvasController } from "../../electron/canvas-controller.js";
 import { ChangeService } from "../../electron/changes/change-service.js";
 import { registerChangeIpc } from "../../electron/ipc/change-ipc.js";
 import { registerProjectIpc } from "../../electron/ipc/project-ipc.js";
 import { registerRuntimeIpc } from "../../electron/ipc/runtime-ipc.js";
+import { registerApplicationIpc } from "../../electron/ipc/application-ipc.js";
+import { DesktopIpcRouter } from "../../electron/ipc/desktop-ipc-router.js";
+import { RendererSessionRegistry, type RendererIpcEvent } from "../../electron/ipc/renderer-session-registry.js";
+import { ApplicationService } from "../../electron/lifecycle/application-service.js";
 import { ProjectActivityCoordinator } from "../../electron/projects/project-activity.js";
 import { ProjectManager } from "../../electron/projects/project-manager.js";
 import { ProjectTrustStore } from "../../electron/projects/project-trust-store.js";
@@ -35,6 +40,8 @@ const projectPaths = process.env.LARGER_ELECTRON_TEST_PROJECTS
 const rendererUrl = process.env.LARGER_ELECTRON_TEST_RENDERER_URL;
 const reactRewriteCliPath = process.env.LARGER_ELECTRON_TEST_REACT_REWRITE_CLI;
 const cancelFirst = process.env.LARGER_ELECTRON_TEST_CANCEL_FIRST !== "false";
+const initialApplicationPhase = process.env.LARGER_ELECTRON_TEST_APPLICATION_PHASE;
+const recoveryDelay = Number(process.env.LARGER_ELECTRON_TEST_RECOVERY_DELAY_MS ?? 0);
 if (!userData || !preload || projectPaths.length === 0) throw new Error("Electron test harness paths are required");
 app.setPath("userData", userData);
 
@@ -101,25 +108,45 @@ void app.whenReady().then(async () => {
     readiness: new FetchReadinessProbe(),
   });
   activity.registerRuntimeParticipant(runtime);
+  const bootId = randomUUID();
+  const application = new ApplicationService({
+    bootId,
+    retry: async () => {
+      if (recoveryDelay > 0) await new Promise((resolve) => setTimeout(resolve, recoveryDelay));
+      await runtime.recover();
+      await manager.bootstrap();
+    },
+    quit: () => app.quit(),
+  });
+  application.startRecovery();
   await runtime.recover();
   await manager.bootstrap();
+  application.markReady();
+  if (initialApplicationPhase === "unavailable") {
+    application.markUnavailable(new Error("The test desktop service failed safely."));
+  }
   const window = new BrowserWindow({
     show: process.env.LARGER_ELECTRON_TEST_SHOW === "true",
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   let pickerCount = 0;
-  const assertTrustedSender = (event: Parameters<Parameters<typeof registerProjectIpc>[0]["assertTrustedSender"]>[0]) => {
+  const assertTrustedSender = (event: RendererIpcEvent) => {
     const senderUrl = event.senderFrame?.url || event.sender.getURL();
     const trustedUrl = rendererUrl ? senderUrl.startsWith(rendererUrl) : senderUrl.startsWith("data:text/html");
     if (event.sender.id !== window.webContents.id || !trustedUrl) {
       throw new Error("Rejected untrusted test renderer");
     }
   };
-  registerProjectIpc({
+  const router = new DesktopIpcRouter({
     ipcMain,
+    sessions: new RendererSessionRegistry(bootId),
+    assertTrustedSender,
+  });
+  registerApplicationIpc({ router, service: application, getWindow: () => window });
+  registerProjectIpc({
+    router,
     manager,
     getWindow: () => window,
-    assertTrustedSender,
     dialog: {
       showOpenDialog: async () => {
         pickerCount += 1;
@@ -130,14 +157,14 @@ void app.whenReady().then(async () => {
       },
     },
   });
-  registerChangeIpc({ ipcMain, service: changes, getWindow: () => window, assertTrustedSender });
-  registerRuntimeIpc({ ipcMain, service: runtime, getWindow: () => window, assertTrustedSender });
+  registerChangeIpc({ router, service: changes, getWindow: () => window });
+  registerRuntimeIpc({ router, service: runtime, getWindow: () => window });
   new CanvasController({
-    ipcMain,
+    router,
     manager,
     runtime,
     getWindow: () => window,
-    assertTrustedSender,
+    createView: (options) => new WebContentsView(options),
   });
   await window.loadURL(rendererUrl ?? "data:text/html,<main id='ready'>Larger test harness</main>");
 });

@@ -1,109 +1,131 @@
-import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from "electron";
-import { ZodError, type ZodType } from "zod";
+import type { BrowserWindow } from "electron";
 import {
   CHANGE_IPC_CHANNELS,
   changeGenerationInputSchema,
+  changeOperationResultSchema,
   changeSelectionInputSchema,
   changeSetMutationInputSchema,
+  changeWorkspaceSnapshotSchema,
   commitApplyInputSchema,
   discardInputSchema,
+  preparedApplyResultSchema,
   recoverInputSchema,
   type ChangeOperationResult,
   type ChangeWorkspaceSnapshot,
   type PreparedApplyResult,
 } from "../../src/change-ipc.js";
-import type { IpcDomainError, IpcEnvelope } from "../../src/project-ipc.js";
+import type { DesktopIpcRouter } from "./desktop-ipc-router.js";
 
 export interface ChangeServicePort {
   snapshot(generation: number): Promise<ChangeWorkspaceSnapshot> | ChangeWorkspaceSnapshot;
-  scan(generation: number): Promise<ChangeOperationResult>;
+  scan(generation: number, options?: { readonly signal?: AbortSignal }): Promise<ChangeOperationResult>;
   updateSelection(
     generation: number,
     changeSetId: string,
     expectedRevision: number,
     selection: import("../../src/change-contracts.js").ChangeSelection,
+    options?: { readonly signal?: AbortSignal },
   ): Promise<ChangeOperationResult>;
-  prepareApply(generation: number, changeSetId: string, expectedRevision: number): Promise<PreparedApplyResult>;
-  commitApply(generation: number, transactionId: string, planDigest: string): Promise<ChangeOperationResult>;
+  prepareApply(generation: number, changeSetId: string, expectedRevision: number, options?: { readonly signal?: AbortSignal }): Promise<PreparedApplyResult>;
+  commitApply(generation: number, transactionId: string, planDigest: string, options?: { readonly signal?: AbortSignal }): Promise<ChangeOperationResult>;
   discard(
     generation: number,
     changeSetId: string,
     expectedRevision: number,
     confirmUnappliedLoss: true,
+    options?: { readonly signal?: AbortSignal },
   ): Promise<ChangeOperationResult>;
   recover(
     generation: number,
     transactionId: string,
     action: import("../../src/change-contracts.js").RecoveryAction,
+    options?: { readonly signal?: AbortSignal },
   ): Promise<ChangeOperationResult>;
   subscribe(listener: (snapshot: ChangeWorkspaceSnapshot) => void): () => void;
 }
 
 export interface ChangeIpcDependencies {
-  readonly ipcMain: IpcMain;
+  readonly router: DesktopIpcRouter;
   readonly service: ChangeServicePort;
   readonly getWindow: () => BrowserWindow | null;
-  readonly assertTrustedSender: (event: IpcMainInvokeEvent) => void;
-}
-
-function domainError(cause: unknown): IpcDomainError {
-  if (cause instanceof ZodError) {
-    return {
-      code: "invalid-ipc-payload",
-      message: "The renderer sent an invalid change operation.",
-      details: cause.issues.map((issue) => ({ path: issue.path, code: issue.code, message: issue.message })),
-    };
-  }
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return { code: "change-operation-failed", message };
 }
 
 export function registerChangeIpc(dependencies: ChangeIpcDependencies): () => void {
-  const { ipcMain, service, getWindow, assertTrustedSender } = dependencies;
-  const channels: string[] = [];
-
-  function handle<TInput, TResult>(
-    channel: string,
-    schema: ZodType<TInput>,
-    operation: (input: TInput) => Promise<TResult> | TResult,
-  ): void {
-    channels.push(channel);
-    ipcMain.handle(channel, async (event, raw: unknown): Promise<IpcEnvelope<TResult>> => {
-      try {
-        assertTrustedSender(event);
-        return { ok: true, value: await operation(schema.parse(raw)) };
-      } catch (cause) {
-        return { ok: false, error: domainError(cause) };
-      }
-    });
-  }
-
-  handle(CHANGE_IPC_CHANNELS.getSnapshot, changeGenerationInputSchema, ({ generation }) => service.snapshot(generation));
-  handle(CHANGE_IPC_CHANNELS.scan, changeGenerationInputSchema, ({ generation }) => service.scan(generation));
-  handle(CHANGE_IPC_CHANNELS.updateSelection, changeSelectionInputSchema, ({ generation, changeSetId, expectedRevision, selection }) => (
-    service.updateSelection(generation, changeSetId, expectedRevision, selection)
-  ));
-  handle(CHANGE_IPC_CHANNELS.prepareApply, changeSetMutationInputSchema, ({ generation, changeSetId, expectedRevision }) => (
-    service.prepareApply(generation, changeSetId, expectedRevision)
-  ));
-  handle(CHANGE_IPC_CHANNELS.commitApply, commitApplyInputSchema, ({ generation, transactionId, planDigest }) => (
-    service.commitApply(generation, transactionId, planDigest)
-  ));
-  handle(CHANGE_IPC_CHANNELS.discard, discardInputSchema, ({ generation, changeSetId, expectedRevision, confirmUnappliedLoss }) => (
-    service.discard(generation, changeSetId, expectedRevision, confirmUnappliedLoss)
-  ));
-  handle(CHANGE_IPC_CHANNELS.recover, recoverInputSchema, ({ generation, transactionId, action }) => (
-    service.recover(generation, transactionId, action)
-  ));
+  const { router, service, getWindow } = dependencies;
+  const disposeHandlers = [
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.getSnapshot,
+      input: changeGenerationInputSchema,
+      output: changeWorkspaceSnapshotSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation }) => service.snapshot(generation),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.scan,
+      input: changeGenerationInputSchema,
+      output: changeOperationResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation }, context) => service.scan(generation, { signal: context.signal }),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.updateSelection,
+      input: changeSelectionInputSchema,
+      output: changeOperationResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation, changeSetId, expectedRevision, selection }, context) => (
+        service.updateSelection(generation, changeSetId, expectedRevision, selection, { signal: context.signal })
+      ),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.prepareApply,
+      input: changeSetMutationInputSchema,
+      output: preparedApplyResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation, changeSetId, expectedRevision }, context) => (
+        service.prepareApply(generation, changeSetId, expectedRevision, { signal: context.signal })
+      ),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.commitApply,
+      input: commitApplyInputSchema,
+      output: changeOperationResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation, transactionId, planDigest }, context) => (
+        service.commitApply(generation, transactionId, planDigest, { signal: context.signal })
+      ),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.discard,
+      input: discardInputSchema,
+      output: changeOperationResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation, changeSetId, expectedRevision, confirmUnappliedLoss }, context) => (
+        service.discard(generation, changeSetId, expectedRevision, confirmUnappliedLoss, { signal: context.signal })
+      ),
+    }),
+    router.register({
+      channel: CHANGE_IPC_CHANNELS.recover,
+      input: recoverInputSchema,
+      output: changeOperationResultSchema,
+      failureCode: "change-operation-failed",
+      run: ({ generation, transactionId, action }, context) => (
+        service.recover(generation, transactionId, action, { signal: context.signal })
+      ),
+    }),
+  ];
 
   const unsubscribe = service.subscribe((snapshot) => {
-    const window = getWindow();
-    if (!window || window.isDestroyed()) return;
-    window.webContents.send(CHANGE_IPC_CHANNELS.snapshot, snapshot);
+    router.publish(
+      getWindow(),
+      CHANGE_IPC_CHANNELS.snapshot,
+      "changes.snapshot",
+      changeWorkspaceSnapshotSchema,
+      snapshot,
+    );
   });
 
   return () => {
     unsubscribe();
-    for (const channel of channels) ipcMain.removeHandler(channel);
+    for (const dispose of disposeHandlers) dispose();
   };
 }

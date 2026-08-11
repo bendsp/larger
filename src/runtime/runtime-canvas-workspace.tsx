@@ -33,17 +33,17 @@ export function RuntimeCanvasWorkspace({
   }, [session?.endpoint.route, surfaceId]);
 
   useEffect(() => {
-    const bridge = window.largerCanvas;
+    const bridge = window.larger?.canvas;
     const element = mount.current;
     if (!bridge || !element || !surfaceId || suspended) {
-      bridge?.hide();
+      if (bridge && surfaceId) bridge.hide(generation, surfaceId);
       return;
     }
     let disposed = false;
     const updateBounds = () => {
       if (disposed) return;
       const bounds = element.getBoundingClientRect();
-      bridge.setBounds(generation, {
+      bridge.setBounds(generation, surfaceId, {
         x: bounds.x,
         y: bounds.y,
         width: bounds.width,
@@ -77,7 +77,7 @@ export function RuntimeCanvasWorkspace({
       unsubscribeFocus();
       observer.disconnect();
       window.removeEventListener("resize", updateBounds);
-      bridge.hide();
+      bridge.hide(generation, surfaceId);
     };
   }, [generation, surfaceId, suspended]);
 
@@ -100,7 +100,7 @@ export function RuntimeCanvasWorkspace({
       return;
     }
     try {
-      await window.largerCanvas?.navigate(generation, session.surface.id, nextRoute);
+      await window.larger?.canvas.navigate(generation, session.surface.id, nextRoute);
       setProblem(null);
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : String(cause));
@@ -132,7 +132,7 @@ export function RuntimeCanvasWorkspace({
           type="button"
           size="sm"
           variant="outline"
-          onClick={() => window.largerCanvas?.focus(generation, session.surface.id)}
+          onClick={() => window.larger?.canvas.focus(generation, session.surface.id)}
         >
           Focus preview
         </Button>
@@ -148,7 +148,7 @@ export function RuntimeCanvasWorkspace({
           <AlertDescription>{problem}</AlertDescription>
         </Alert>
       )}
-      {!window.largerCanvas && (
+      {!window.larger?.canvas && (
         <Alert className="m-3 shrink-0">
           <MonitorPlayIcon />
           <AlertTitle>Desktop canvas required</AlertTitle>

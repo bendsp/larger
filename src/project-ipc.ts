@@ -121,16 +121,6 @@ export interface LargerProjectsBridge {
   onSnapshot(listener: (snapshot: ProjectLifecycleSnapshot) => void): () => void;
 }
 
-export interface IpcDomainError {
-  code: string;
-  message: string;
-  details?: unknown;
-}
-
-export type IpcEnvelope<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: IpcDomainError };
-
 const stringArray = z.array(z.string());
 const detectionSchema = <T extends z.ZodType>(value: T) => z.discriminatedUnion("status", [
   z.object({ status: z.literal("detected"), value, evidence: stringArray }).strict(),

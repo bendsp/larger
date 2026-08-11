@@ -93,6 +93,33 @@ class RevocationTrustStore extends ProjectTrustStore {
   }
 }
 
+test("renderer-document cancellation prevents an in-flight project open from publishing", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-client-lease-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const projectPath = await fixture(path.join(temporary, "sources"), "project", "lease-project");
+  const detectionStarted = deferred();
+  const continueDetection = deferred();
+  const manager = managerFor(path.join(temporary, "user-data"), {
+    detect: async (candidate, options) => {
+      detectionStarted.release();
+      await continueDetection.promise;
+      options?.signal?.throwIfAborted();
+      return detectProject(candidate, options);
+    },
+  });
+  const controller = new AbortController();
+
+  const opening = manager.openPath(projectPath, undefined, { signal: controller.signal });
+  await detectionStarted.promise;
+  controller.abort(new Error("renderer document reloaded"));
+  continueDetection.release();
+  const result = await opening;
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(manager.snapshot().active, null);
+  assert.equal(manager.snapshot().pending, null);
+});
+
 test("opens, switches, persists personal state, and restores the last valid project", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));

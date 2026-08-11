@@ -5,7 +5,12 @@ import {
   type ProjectTrustRecord,
   type ProjectTrustState,
 } from "../../src/project-contracts.js";
-import { VersionedAtomicJsonStore, type JsonStoreCodec, type JsonStoreReadResult } from "../storage/versioned-atomic-json-store.js";
+import {
+  VersionedAtomicJsonStore,
+  type AtomicJsonOperationOptions,
+  type JsonStoreCodec,
+  type JsonStoreReadResult,
+} from "../storage/versioned-atomic-json-store.js";
 import { projectInstanceKey, sameProjectInstance } from "./project-identity.js";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -91,6 +96,7 @@ export class ProjectTrustStore {
     identity: ProjectIdentity,
     decision: ProjectTrustRecord["decision"],
     now = new Date(),
+    options: AtomicJsonOperationOptions = {},
   ): Promise<ProjectTrustRecord> {
     assertIdentity(identity);
     const timestamp = now.toISOString();
@@ -107,7 +113,7 @@ export class ProjectTrustStore {
         ...state,
         records: [saved, ...state.records.filter((record) => record.instanceKey !== identity.instanceKey)],
       };
-    });
+    }, options);
     return saved as ProjectTrustRecord;
   }
 

@@ -4,6 +4,7 @@ dist/
 .larger/runtime/
 .larger/cache/
 .larger/logs/
+.larger/out/
 larger.project.json
 *.log
 .DS_Store

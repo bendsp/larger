@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { lstat, realpath } from "node:fs/promises";
 import type { EditorAdapter, EditorStartInput, StartedEditor } from "../../editor-adapter.js";
+import { resolveReactRewriteCliPath } from "./packaged-resource.js";
 
 const require = createRequire(
   typeof __filename === "string" ? __filename : path.join(process.cwd(), "package.json"),
@@ -70,7 +71,7 @@ async function readBoundedResponseText(
 
 function packageCliPath(): string {
   const packageJson = require.resolve("react-rewrite-cli/package.json");
-  return path.join(path.dirname(packageJson), "bin", "react-rewrite.js");
+  return resolveReactRewriteCliPath({ packageJsonPath: packageJson, resourcesPath: process.resourcesPath });
 }
 
 async function allocateLoopbackPort(signal: AbortSignal): Promise<number> {

@@ -1,116 +1,166 @@
-import type {
-  BrowserWindow,
-  Dialog,
-  IpcMain,
-  IpcMainInvokeEvent,
-} from "electron";
-import { ZodError, type ZodType } from "zod";
+import type { BrowserWindow, Dialog } from "electron";
+import { z } from "zod";
 import {
   generationInputSchema,
   initializeInputSchema,
   personalStateInputSchema,
   PROJECT_IPC_CHANNELS,
+  projectLifecycleSnapshotSchema,
+  projectOperationResultSchema,
   recentInputSchema,
   trustInputSchema,
-  type IpcDomainError,
-  type IpcEnvelope,
 } from "../../src/project-ipc.js";
 import type { ProjectManager } from "../projects/project-manager.js";
+import type {
+  DesktopIpcOperationContext,
+  DesktopIpcRouter,
+} from "./desktop-ipc-router.js";
+import type { ProjectOperationResult } from "../../src/project-ipc.js";
+
+const emptyInputSchema = z.object({}).strict();
 
 export interface ProjectIpcDependencies {
-  ipcMain: IpcMain;
-  dialog: Pick<Dialog, "showOpenDialog">;
-  manager: ProjectManager;
-  getWindow(): BrowserWindow | null;
-  assertTrustedSender(event: IpcMainInvokeEvent): void;
-}
-
-function domainError(cause: unknown): IpcDomainError {
-  if (cause instanceof ZodError) {
-    return {
-      code: "invalid-ipc-payload",
-      message: "The renderer sent an invalid project operation.",
-      details: cause.issues.map((issue) => ({ path: issue.path, code: issue.code, message: issue.message })),
-    };
-  }
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return {
-    code: /stale/i.test(message) ? "stale-generation" : "project-operation-failed",
-    message,
-  };
-}
-
-function success<T>(value: T): IpcEnvelope<T> {
-  return { ok: true, value };
-}
-
-function failure<T>(cause: unknown): IpcEnvelope<T> {
-  return { ok: false, error: domainError(cause) };
+  readonly router: DesktopIpcRouter;
+  readonly dialog: Pick<Dialog, "showOpenDialog">;
+  readonly manager: ProjectManager;
+  readonly getWindow: () => BrowserWindow | null;
+  readonly pickAndOpen?: (context: DesktopIpcOperationContext) => Promise<ProjectOperationResult>;
+  readonly openRecent?: (
+    instanceKey: string,
+    context: DesktopIpcOperationContext,
+  ) => Promise<ProjectOperationResult>;
+  readonly removeRecent?: (
+    instanceKey: string,
+    context: DesktopIpcOperationContext,
+  ) => Promise<ProjectOperationResult>;
 }
 
 export function registerProjectIpc(dependencies: ProjectIpcDependencies): () => void {
-  const { ipcMain, dialog, manager, getWindow, assertTrustedSender } = dependencies;
+  const { router, dialog, manager, getWindow } = dependencies;
   let picker: Promise<unknown> | null = null;
-  const channels: string[] = [];
-
-  function handle<TInput, TResult>(
-    channel: string,
-    schema: ZodType<TInput> | null,
-    operation: (input: TInput) => Promise<TResult> | TResult,
-  ): void {
-    channels.push(channel);
-    ipcMain.handle(channel, async (event, raw: unknown): Promise<IpcEnvelope<TResult>> => {
-      try {
-        assertTrustedSender(event);
-        const input = schema ? schema.parse(raw) : undefined as TInput;
-        return success(await operation(input));
-      } catch (cause) {
-        return failure(cause);
-      }
-    });
-  }
-
-  handle(PROJECT_IPC_CHANNELS.getSnapshot, null, () => manager.snapshot());
-  handle(PROJECT_IPC_CHANNELS.pickAndOpen, null, async () => {
-    if (picker) throw new Error("A project folder picker is already open");
-    const owner = getWindow();
-    if (!owner) throw new Error("The Larger window is not available");
-    picker = dialog.showOpenDialog(owner, {
-      title: "Open project",
-      buttonLabel: "Open project",
-      properties: ["openDirectory", "createDirectory"],
-    });
-    try {
-      const result = await picker as Awaited<ReturnType<Dialog["showOpenDialog"]>>;
-      if (result.canceled || result.filePaths.length === 0) {
-        return { status: "cancelled" as const, snapshot: manager.snapshot() };
-      }
-      return manager.openPath(result.filePaths[0]!);
-    } finally {
-      picker = null;
-    }
-  });
-  handle(PROJECT_IPC_CHANNELS.openRecent, recentInputSchema, ({ instanceKey }) => manager.openRecent(instanceKey));
-  handle(PROJECT_IPC_CHANNELS.initialize, initializeInputSchema, ({ generation, manifest }) => manager.initialize(generation, manifest));
-  handle(PROJECT_IPC_CHANNELS.updateManifest, initializeInputSchema, ({ generation, manifest }) => manager.updateManifest(generation, manifest));
-  handle(PROJECT_IPC_CHANNELS.dismissPending, generationInputSchema, ({ generation }) => manager.dismissPending(generation));
-  handle(PROJECT_IPC_CHANNELS.setTrust, trustInputSchema, ({ generation, decision }) => manager.setTrust(generation, decision));
-  handle(PROJECT_IPC_CHANNELS.refresh, generationInputSchema, ({ generation }) => manager.refresh(generation));
-  handle(PROJECT_IPC_CHANNELS.close, generationInputSchema, ({ generation }) => manager.close(generation));
-  handle(PROJECT_IPC_CHANNELS.removeRecent, recentInputSchema, ({ instanceKey }) => manager.removeRecent(instanceKey));
-  handle(PROJECT_IPC_CHANNELS.updatePersonalState, personalStateInputSchema, ({ generation, personalState }) => (
-    manager.updatePersonalState(generation, personalState)
-  ));
-  handle(PROJECT_IPC_CHANNELS.prepareWorkspace, generationInputSchema, ({ generation }) => manager.prepareWorkspace(generation));
+  const disposeHandlers = [
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.getSnapshot,
+      input: emptyInputSchema,
+      output: projectLifecycleSnapshotSchema,
+      failureCode: "project-operation-failed",
+      run: () => manager.snapshot(),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.pickAndOpen,
+      input: emptyInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: async (_input, context) => {
+        if (dependencies.pickAndOpen) return dependencies.pickAndOpen(context);
+        if (picker) throw new Error("A project folder picker is already open");
+        const owner = getWindow();
+        if (!owner) throw new Error("The Larger window is not available");
+        picker = dialog.showOpenDialog(owner, {
+          title: "Open project",
+          buttonLabel: "Open project",
+          properties: ["openDirectory", "createDirectory"],
+        });
+        try {
+          const result = await picker as Awaited<ReturnType<Dialog["showOpenDialog"]>>;
+          context.assertCurrent();
+          if (result.canceled || result.filePaths.length === 0) {
+            return { status: "cancelled" as const, snapshot: manager.snapshot() };
+          }
+          return manager.openPath(result.filePaths[0]!, undefined, { signal: context.signal });
+        } finally {
+          picker = null;
+        }
+      },
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.openRecent,
+      input: recentInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ instanceKey }, context) => dependencies.openRecent
+        ? dependencies.openRecent(instanceKey, context)
+        : manager.openRecent(instanceKey, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.initialize,
+      input: initializeInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation, manifest }, context) => manager.initialize(generation, manifest, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.updateManifest,
+      input: initializeInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation, manifest }, context) => manager.updateManifest(generation, manifest, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.dismissPending,
+      input: generationInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation }, context) => manager.dismissPending(generation, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.setTrust,
+      input: trustInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation, decision }, context) => manager.setTrust(generation, decision, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.refresh,
+      input: generationInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation }, context) => manager.refresh(generation, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.close,
+      input: generationInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation }, context) => manager.close(generation, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.removeRecent,
+      input: recentInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ instanceKey }, context) => dependencies.removeRecent
+        ? dependencies.removeRecent(instanceKey, context)
+        : manager.removeRecent(instanceKey, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.updatePersonalState,
+      input: personalStateInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation, personalState }, context) => manager.updatePersonalState(generation, personalState, { signal: context.signal }),
+    }),
+    router.register({
+      channel: PROJECT_IPC_CHANNELS.prepareWorkspace,
+      input: generationInputSchema,
+      output: projectOperationResultSchema,
+      failureCode: "project-operation-failed",
+      run: ({ generation }, context) => manager.prepareWorkspace(generation, { signal: context.signal }),
+    }),
+  ];
 
   const unsubscribe = manager.subscribe((snapshot) => {
-    const window = getWindow();
-    if (!window || window.isDestroyed()) return;
-    window.webContents.send(PROJECT_IPC_CHANNELS.snapshot, snapshot);
+    router.publish(
+      getWindow(),
+      PROJECT_IPC_CHANNELS.snapshot,
+      "projects.snapshot",
+      projectLifecycleSnapshotSchema,
+      snapshot,
+    );
   });
 
   return () => {
     unsubscribe();
-    for (const channel of channels) ipcMain.removeHandler(channel);
+    for (const dispose of disposeHandlers) dispose();
   };
 }

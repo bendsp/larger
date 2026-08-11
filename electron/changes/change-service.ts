@@ -75,6 +75,10 @@ export interface ChangeActivityGateway {
   acquireSourceWrite(transactionId: string): ProjectActivityLease;
 }
 
+export interface ChangeOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
 export type ChangeTransactionPhase =
   | "journal-prepared"
   | "commit-started"
@@ -283,6 +287,7 @@ export class ChangeService {
   private readonly resources = new Map<string, Promise<ProjectResources>>();
   private readonly resetWorkspaces = new Map<string, RuntimeWorkspace>();
   private operationTail: Promise<void> = Promise.resolve();
+  private acceptingOperations = true;
   private workspaceRevision = 0;
   private state: ChangeWorkspaceSnapshot = {
     revision: 0,
@@ -303,8 +308,21 @@ export class ChangeService {
   }
 
   subscribe(listener: SnapshotListener): () => void {
+    if (!this.acceptingOperations) throw new Error("Change service is shutting down");
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  async dispose(): Promise<void> {
+    if (!this.acceptingOperations) {
+      await this.operationTail;
+      return;
+    }
+    this.acceptingOperations = false;
+    await this.operationTail;
+    this.listeners.clear();
+    this.resources.clear();
+    this.resetWorkspaces.clear();
   }
 
   snapshot(generation: number): Promise<ChangeWorkspaceSnapshot> {
@@ -315,8 +333,9 @@ export class ChangeService {
     });
   }
 
-  scan(generation: number): Promise<ChangeOperationResult> {
+  scan(generation: number, options: ChangeOperationOptions = {}): Promise<ChangeOperationResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       const active = this.projects.activeForChanges(generation);
       await this.hydrateProjectState(active);
       if (this.state.changeSet?.recovery?.actionRequired || this.state.changeSet?.status === "applying") {
@@ -326,7 +345,8 @@ export class ChangeService {
       try {
         const workspace = await this.requireWorkspace(active);
         const projectResources = await this.resourcesFor(active.identity.instanceKey);
-        const result = await projectResources.scanner.scan(workspace);
+        const result = await projectResources.scanner.scan(workspace, options.signal);
+        options.signal?.throwIfAborted();
         const current = this.state.changeSet;
         const timestamp = this.now().toISOString();
         let next: ChangeSetSnapshot;
@@ -371,7 +391,7 @@ export class ChangeService {
         this.failOperation(cause, "internal");
         throw cause;
       }
-    });
+    }, options);
   }
 
   updateSelection(
@@ -379,8 +399,10 @@ export class ChangeService {
     changeSetId: string,
     expectedRevision: number,
     selection: ChangeSelection,
+    options: ChangeOperationOptions = {},
   ): Promise<ChangeOperationResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       const active = this.projects.activeForChanges(generation);
       this.ensureProjectState(active);
       const resources = await this.resourcesFor(active.identity.instanceKey);
@@ -389,6 +411,7 @@ export class ChangeService {
       if (["applying", "applied", "discarded"].includes(current.status)) {
         throw new Error(`Selection cannot change while a ChangeSet is ${current.status}.`);
       }
+      options.signal?.throwIfAborted();
       const next = await resources.changeSets.update({
         ...current,
         revision: current.revision + 1,
@@ -400,15 +423,17 @@ export class ChangeService {
       }, current.revision);
       this.update({ changeSet: next, operation: null, problem: NO_PROBLEM });
       return completed(structuredClone(this.state));
-    });
+    }, options);
   }
 
   prepareApply(
     generation: number,
     changeSetId: string,
     expectedRevision: number,
+    options: ChangeOperationOptions = {},
   ): Promise<PreparedApplyResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       const active = this.projects.activeForChanges(generation);
       this.ensureProjectState(active);
       const resources = await this.resourcesFor(active.identity.instanceKey);
@@ -437,6 +462,7 @@ export class ChangeService {
       this.update({ operation: { kind: "preparing-apply" }, problem: NO_PROBLEM });
       try {
         const authorizedProject = await this.projects.authorizeSourceOperation(generation, current.instanceKey);
+        options.signal?.throwIfAborted();
         this.assertChangeSetProject(current, authorizedProject);
         const root = await authorizeSourceRoot(authorizedProject.identity.canonicalPath);
         const selected = current.selection.files.filter((selection) => selection.includeFile);
@@ -447,6 +473,7 @@ export class ChangeService {
         const prepared: PreparedFile[] = [];
         const conflicts: string[] = [];
         for (const selection of selected) {
+          options.signal?.throwIfAborted();
           const file = current.files.find((candidate) => candidate.id === selection.fileId);
           if (!file) throw new Error(`Selection references a stale file: ${selection.fileId}`);
           if (file.kind !== "text") throw new Error(`Unsupported file cannot be applied: ${file.path}`);
@@ -544,8 +571,10 @@ export class ChangeService {
           state: "prepared",
           files: journalFiles,
         };
+        options.signal?.throwIfAborted();
         await resources.transactions.createJournal(journal, blobBytes);
         await this.phase("journal-prepared", journal);
+        options.signal?.throwIfAborted();
 
         const applying = await resources.changeSets.update({
           ...current,
@@ -561,11 +590,17 @@ export class ChangeService {
         this.failOperation(cause, cause instanceof SourceCompareAndSwapError ? "source-conflict" : "internal");
         throw cause;
       }
-    });
+    }, options);
   }
 
-  commitApply(generation: number, transactionId: string, planDigest: string): Promise<ChangeOperationResult> {
+  commitApply(
+    generation: number,
+    transactionId: string,
+    planDigest: string,
+    options: ChangeOperationOptions = {},
+  ): Promise<ChangeOperationResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       const active = this.projects.activeForChanges(generation);
       this.ensureProjectState(active);
       const resources = await this.resourcesFor(active.identity.instanceKey);
@@ -585,8 +620,13 @@ export class ChangeService {
       let root: AuthorizedSourceRoot | null = null;
       try {
         const authorizedProject = await this.projects.authorizeSourceOperation(generation, journal.instanceKey);
+        options.signal?.throwIfAborted();
         this.assertChangeSetProject(changeSet, authorizedProject);
         root = await this.authorizeJournalRoot(journal, authorizedProject);
+        options.signal?.throwIfAborted();
+        // Once the committing journal state is durable, source application owns
+        // completion even if the renderer document disappears. Stopping at that
+        // point would intentionally create a recovery transaction.
         this.update({ operation: { kind: "applying", transactionId }, problem: NO_PROBLEM });
         journal = await resources.transactions.update(transactionId, (current) => ({
           ...current,
@@ -640,7 +680,7 @@ export class ChangeService {
       } finally {
         lease.release();
       }
-    });
+    }, options);
   }
 
   discard(
@@ -648,8 +688,10 @@ export class ChangeService {
     changeSetId: string,
     expectedRevision: number,
     confirmUnappliedLoss: true,
+    options: ChangeOperationOptions = {},
   ): Promise<ChangeOperationResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       if (confirmUnappliedLoss !== true) throw new Error("Discard requires explicit confirmation.");
       const active = this.projects.activeForChanges(generation);
       this.ensureProjectState(active);
@@ -664,7 +706,8 @@ export class ChangeService {
         if (!workspace || workspace.runtimeId !== current.origin.runtimeId || workspace.baselineIdentity !== current.baselineIdentity) {
           throw new Error("The runtime workspace changed before discard.");
         }
-        const reset = await this.workspaces.for(active.identity).resetCurrent();
+        const reset = await this.workspaces.for(active.identity).resetCurrent(options.signal);
+        options.signal?.throwIfAborted();
         if (reset.baselineIdentity !== current.baselineIdentity) {
           throw new Error("Runtime reset produced a different baseline.");
         }
@@ -683,11 +726,17 @@ export class ChangeService {
         this.failOperation(cause, "internal");
         throw cause;
       }
-    });
+    }, options);
   }
 
-  recover(generation: number, transactionId: string, action: RecoveryAction): Promise<ChangeOperationResult> {
+  recover(
+    generation: number,
+    transactionId: string,
+    action: RecoveryAction,
+    options: ChangeOperationOptions = {},
+  ): Promise<ChangeOperationResult> {
     return this.serialize(async () => {
+      options.signal?.throwIfAborted();
       const active = this.projects.activeForChanges(generation);
       this.ensureProjectState(active);
       const resources = await this.resourcesFor(active.identity.instanceKey);
@@ -713,8 +762,10 @@ export class ChangeService {
       let root: AuthorizedSourceRoot | null = null;
       try {
         const authorizedProject = await this.projects.authorizeSourceOperation(generation, journal.instanceKey);
+        options.signal?.throwIfAborted();
         this.assertChangeSetProject(changeSet, authorizedProject);
         root = await this.authorizeJournalRoot(journal, authorizedProject);
+        options.signal?.throwIfAborted();
         const reconciled = await this.reconcileJournalWithSource(resources, journal, root, action);
         journal = reconciled.journal;
         const unknownPaths = reconciled.conflictPaths;
@@ -791,11 +842,17 @@ export class ChangeService {
       } finally {
         lease.release();
       }
-    });
+    }, options);
   }
 
-  private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationTail.then(operation, operation);
+  private serialize<T>(operation: () => Promise<T>, options: ChangeOperationOptions = {}): Promise<T> {
+    if (!this.acceptingOperations) return Promise.reject(new Error("Change service is shutting down"));
+    options.signal?.throwIfAborted();
+    const run = async () => {
+      options.signal?.throwIfAborted();
+      return operation();
+    };
+    const result = this.operationTail.then(run, run);
     this.operationTail = result.then(() => undefined, () => undefined);
     return result;
   }

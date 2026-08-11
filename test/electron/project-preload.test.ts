@@ -8,6 +8,10 @@ import test, { describe } from "node:test";
 import { build } from "esbuild";
 import { _electron as electron } from "playwright-core";
 import { RuntimeWorkspaceProvider } from "../../electron/runtime-workspaces/provider.js";
+import {
+  RUNTIME_FIXTURE_SOURCE,
+  writeRuntimeFrameworkProject,
+} from "../fixtures/runtime-framework/project-fixture.mjs";
 
 async function buildFixtureMain(temporary: string): Promise<string> {
   const fixtureMain = path.join(temporary, "fixture-main.cjs");
@@ -99,108 +103,6 @@ async function writeProject(projectPath: string, projectId: string, name: string
   }, null, 2)}\n`);
 }
 
-async function writeRuntimeProject(
-  projectPath: string,
-  projectId: string,
-  name: string,
-  preferredPort: number,
-): Promise<void> {
-  const fixtureRoot = path.resolve("test/fixtures/runtime-framework");
-  const fixturePackage = JSON.parse(
-    await readFile(path.join(fixtureRoot, "package.json"), "utf8"),
-  ) as Record<string, unknown>;
-  await mkdir(path.join(projectPath, ".larger"), { recursive: true });
-  await mkdir(path.join(projectPath, "app"), { recursive: true });
-  await mkdir(path.join(projectPath, "src"), { recursive: true });
-  await writeFile(path.join(projectPath, "package.json"), `${JSON.stringify({
-    ...fixturePackage,
-    name: projectId,
-    scripts: { dev: "vite" },
-  }, null, 2)}\n`);
-  await writeFile(
-    path.join(projectPath, "pnpm-lock.yaml"),
-    await readFile(path.join(fixtureRoot, "pnpm-lock.yaml"), "utf8"),
-  );
-  await writeFile(path.join(projectPath, "index.html"), "<div id=\"root\"></div><script type=\"module\" src=\"/src/main.jsx\"></script>\n");
-  await writeFile(path.join(projectPath, "src", "main.jsx"), [
-    "import React from 'react';",
-    "import { createRoot } from 'react-dom/client';",
-    "import { App } from './App.jsx';",
-    "createRoot(document.getElementById('root')).render(<App />);",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(projectPath, "src", "App.jsx"), [
-    "import React from 'react';",
-    "export function App() {",
-    "  return <main><h1>Managed Vite fixture</h1></main>;",
-    "}",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(projectPath, "draft.txt"), "intentional untracked fixture state\n");
-  await writeFile(path.join(projectPath, "vite.config.js"), [
-    "console.log(`approved:${process.env.LARGER_APPROVED_SECRET}`);",
-    "console.log(`unapproved:${process.env.LARGER_UNAPPROVED_SECRET ?? 'missing'}`);",
-    "export default {};",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(projectPath, "app", "page.js"), [
-    "export default function Page() {",
-    "  return <main><h1>Managed Next fixture</h1></main>;",
-    "}",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(projectPath, "app", "layout.js"), [
-    "export default function RootLayout({ children }) {",
-    "  return <html><body>{children}</body></html>;",
-    "}",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(projectPath, ".larger", "project.json"), `${JSON.stringify({
-    schemaVersion: 2,
-    projectId,
-    name,
-    defaultRuntimeProfile: "vite",
-    runtimeProfiles: {
-      vite: {
-        command: ["pnpm", "exec", "vite", "--host", "{host}", "--port", "{port}", "--strictPort"],
-        workingDirectory: ".",
-        dependencyRoot: ".",
-        host: "127.0.0.1",
-        preferredPort,
-        readiness: { path: "/", timeoutMs: 15_000 },
-        entryRoute: "/",
-        environment: { literals: {}, inherit: ["PATH", "LARGER_APPROVED_SECRET"], secrets: {} },
-        runtimeAdapter: "command",
-        editorAdapter: null,
-      },
-      "react-rewrite": {
-        command: ["pnpm", "exec", "vite", "--host", "{host}", "--port", "{port}", "--strictPort"],
-        workingDirectory: ".",
-        dependencyRoot: ".",
-        host: "127.0.0.1",
-        preferredPort: preferredPort + 10,
-        readiness: { path: "/", timeoutMs: 15_000 },
-        entryRoute: "/",
-        environment: { literals: {}, inherit: ["PATH"], secrets: {} },
-        runtimeAdapter: "command",
-        editorAdapter: "react-rewrite",
-      },
-      next: {
-        command: ["pnpm", "exec", "next", "dev", "--hostname", "{host}", "--port", "{port}"],
-        workingDirectory: ".",
-        dependencyRoot: ".",
-        host: "127.0.0.1",
-        preferredPort: preferredPort + 20,
-        readiness: { path: "/", timeoutMs: 30_000 },
-        entryRoute: "/",
-        environment: { literals: {}, inherit: ["PATH"], secrets: {} },
-        runtimeAdapter: "command",
-        editorAdapter: null,
-      },
-    },
-  }, null, 2)}\n`);
-}
-
 async function serveProductionRenderer(t: test.TestContext): Promise<string> {
   const distRoot = path.resolve("dist");
   const server = createServer(async (request, response) => {
@@ -236,6 +138,7 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-electron-test-"));
   t.after(() => removeTestTree(temporary));
   const fixtureMain = await buildFixtureMain(temporary);
+  const rendererUrl = await serveProductionRenderer(t);
   const projectPath = path.join(temporary, "project");
   await writeProject(projectPath, "electron-fixture", "Electron fixture");
   const require = createRequire(import.meta.url);
@@ -248,14 +151,21 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
       LARGER_ELECTRON_TEST_USER_DATA: path.join(temporary, "user-data"),
       LARGER_ELECTRON_TEST_PRELOAD: path.resolve(".larger/electron/preload.cjs"),
       LARGER_ELECTRON_TEST_PROJECT: projectPath,
+      LARGER_ELECTRON_TEST_RENDERER_URL: rendererUrl,
     },
   });
   t.after(() => application.close());
   const page = await application.firstWindow();
+  await page.waitForFunction(() => (
+    typeof window.larger?.application?.getSnapshot === "function"
+    && typeof window.larger?.projects?.getSnapshot === "function"
+  ));
   const boundary = await page.evaluate(() => ({
-    projects: Object.keys(window.larger?.projects ?? {}).sort(),
-    changes: Object.keys(window.larger?.changes ?? {}).sort(),
-    runtime: Object.keys(window.larger?.runtime ?? {}).sort(),
+    namespaces: Object.fromEntries(Object.entries(window.larger!).map(([name, bridge]) => [
+      name,
+      Object.keys(bridge).sort(),
+    ])),
+    hasLegacyCanvas: "largerCanvas" in window,
     hasProcess: "process" in window,
     hasRequire: "require" in window,
     hasIpcRenderer: "ipcRenderer" in window,
@@ -263,27 +173,70 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   assert.equal(boundary.hasProcess, false);
   assert.equal(boundary.hasRequire, false);
   assert.equal(boundary.hasIpcRenderer, false);
-  assert.deepEqual(boundary.projects, [
-    "close", "dismissPending", "getSnapshot", "initialize", "onSnapshot", "openRecent", "pickAndOpen",
-    "prepareWorkspace", "refresh", "removeRecent", "setTrust", "updateManifest", "updatePersonalState",
-  ]);
-  assert.deepEqual(boundary.changes, [
-    "commitApply", "discard", "getSnapshot", "onSnapshot", "prepareApply", "recover", "scan", "updateSelection",
-  ]);
-  assert.deepEqual(boundary.runtime, [
-    "attach", "cancel", "detach", "discover", "getSnapshot", "onSnapshot", "restart", "start", "stop",
-  ]);
+  assert.equal(boundary.hasLegacyCanvas, false);
+  assert.deepEqual(boundary.namespaces, {
+    application: ["getSnapshot", "onSnapshot", "quit", "retry"],
+    projects: [
+      "close", "dismissPending", "getSnapshot", "initialize", "onSnapshot", "openRecent",
+      "pickAndOpen", "prepareWorkspace", "refresh", "removeRecent", "setTrust",
+      "updateManifest", "updatePersonalState",
+    ],
+    changes: [
+      "commitApply", "discard", "getSnapshot", "onSnapshot", "prepareApply", "recover",
+      "scan", "updateSelection",
+    ],
+    runtime: ["attach", "cancel", "detach", "discover", "getSnapshot", "onSnapshot", "restart", "start", "stop"],
+    canvas: ["focus", "hide", "load", "navigate", "onFocusReturn", "onNavigation", "setBounds", "show"],
+  });
   const result = await page.evaluate(async () => {
+    const desktop = await window.larger!.application.getSnapshot();
     const before = await window.larger!.projects.getSnapshot();
     const cancelled = await window.larger!.projects.pickAndOpen();
     const after = await window.larger!.projects.getSnapshot();
-    return { before, cancelled, after };
+    return { desktop, before, cancelled, after };
   });
+  assert.equal(result.desktop.protocolVersion, 1);
+  assert.equal(result.desktop.phase, "ready");
   assert.equal(result.cancelled.status, "cancelled");
   assert.deepEqual(result.after, result.before);
   const selected = await page.evaluate(() => window.larger!.projects.pickAndOpen());
   assert.equal(selected.status, "completed");
   assert.equal(selected.snapshot.active?.manifest.name, "Electron fixture");
+});
+
+test("production renderer recovers an unavailable desktop through the typed application bridge", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-lifecycle-test-"));
+  t.after(() => removeTestTree(temporary));
+  const fixtureMain = await buildFixtureMain(temporary);
+  const rendererUrl = await serveProductionRenderer(t);
+  const projectPath = path.join(temporary, "project");
+  await writeProject(projectPath, "lifecycle-fixture", "Lifecycle fixture");
+  const require = createRequire(import.meta.url);
+  const executablePath = require("electron") as string;
+  const application = await electron.launch({
+    executablePath,
+    args: [fixtureMain],
+    env: {
+      ...process.env,
+      LARGER_ELECTRON_TEST_USER_DATA: path.join(temporary, "user-data"),
+      LARGER_ELECTRON_TEST_PRELOAD: path.resolve(".larger/electron/preload.cjs"),
+      LARGER_ELECTRON_TEST_PROJECT: projectPath,
+      LARGER_ELECTRON_TEST_RENDERER_URL: rendererUrl,
+      LARGER_ELECTRON_TEST_SHOW: "true",
+      LARGER_ELECTRON_TEST_APPLICATION_PHASE: "unavailable",
+      LARGER_ELECTRON_TEST_RECOVERY_DELAY_MS: "300",
+    },
+  });
+  t.after(() => closeElectronApplication(application));
+  const page = await application.firstWindow();
+
+  await page.getByRole("heading", { name: "Larger could not start" }).waitFor({ timeout: 5_000 });
+  assert.match(await page.locator("body").innerText(), /The desktop services could not be started\./);
+  assert.doesNotMatch(await page.locator("body").innerText(), /test desktop service failed safely/i);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await page.getByRole("heading", { name: "Restoring your workspace" }).waitFor();
+  await page.getByRole("heading", { name: "Larger" }).waitFor({ timeout: 5_000 });
+  assert.equal(await page.getByTestId("application-lifecycle").count(), 0);
 });
 
 test("production renderer switches through pending setup and restores personal UI state after relaunch", async (t) => {
@@ -466,7 +419,12 @@ test("production renderer owns managed runtime lifecycle and keeps attached prev
   const occupiedAddress = occupiedServer.address();
   assert.ok(occupiedAddress && typeof occupiedAddress !== "string");
   const preferredPort = occupiedAddress.port;
-  await writeRuntimeProject(projectPath, "renderer-runtime", "Renderer runtime", preferredPort);
+  await writeRuntimeFrameworkProject({
+    projectPath,
+    projectId: "renderer-runtime",
+    name: "Renderer runtime",
+    preferredPort,
+  });
   await writeProject(secondProjectPath, "renderer-runtime-second", "Second runtime project");
 
   const require = createRequire(import.meta.url);
@@ -798,13 +756,7 @@ test("production renderer owns managed runtime lifecycle and keeps attached prev
   assert.ok(rewriteChangeSet, "React Rewrite edit did not produce a ChangeSet");
   const rewriteFile = rewriteChangeSet.files.find((file) => file.path === "src/App.jsx");
   assert.ok(rewriteFile && rewriteFile.kind === "text", "React Rewrite edit was not captured as text");
-  assert.equal(await readFile(path.join(projectPath, "src", "App.jsx"), "utf8"), [
-    "import React from 'react';",
-    "export function App() {",
-    "  return <main><h1>Managed Vite fixture</h1></main>;",
-    "}",
-    "",
-  ].join("\n"));
+  assert.equal(await readFile(path.join(projectPath, "src", "App.jsx"), "utf8"), RUNTIME_FIXTURE_SOURCE);
   const selectedChange = await firstPage.evaluate(async ({ changeSetId, revision, fileId, hunkIds }) => {
     const project = await window.larger!.projects.getSnapshot();
     if (!project.active) throw new Error("Expected an active project");
