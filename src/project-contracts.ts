@@ -49,7 +49,7 @@ export interface RecentProject extends ProjectIdentity {
 export interface ProjectPersonalState {
   selectedRuntimeProfile?: string;
   lastRoute?: string;
-  selectedSection?: "overview" | "components" | "design-system" | "assets" | "routes" | "servers";
+  selectedSection?: "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "servers";
 }
 
 export interface ApplicationState {

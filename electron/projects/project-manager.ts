@@ -30,6 +30,7 @@ import {
 
 export interface RuntimeWorkspaceGateway {
   stage(sourceRoot: string, options?: { signal?: AbortSignal }): Promise<RuntimeWorkspace>;
+  current?(): Promise<RuntimeWorkspace | undefined>;
 }
 
 export interface SessionSwitchGuard {
@@ -133,6 +134,28 @@ export class ProjectManager {
     return structuredClone(this.state);
   }
 
+  activeForChanges(generation: number): ActiveProject {
+    return structuredClone(this.requireActive(generation));
+  }
+
+  async authorizeSourceOperation(generation: number, expectedInstanceKey: string): Promise<ActiveProject> {
+    const active = this.requireActive(generation);
+    if (active.identity.instanceKey !== expectedInstanceKey) {
+      throw new Error("The source operation belongs to a different project instance.");
+    }
+    const manifest = await this.readManifest(active.identity.canonicalPath);
+    const identity = await createProjectIdentity(manifest.projectId, active.identity.canonicalPath);
+    const current = this.requireActive(generation);
+    if (
+      identity.instanceKey !== expectedInstanceKey
+      || identity.instanceKey !== current.identity.instanceKey
+      || identity.projectId !== current.identity.projectId
+    ) {
+      throw new Error("Project identity changed before the source operation.");
+    }
+    return structuredClone({ ...current, manifest, identity });
+  }
+
   subscribe(listener: SnapshotListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -197,6 +220,7 @@ export class ProjectManager {
       signal.throwIfAborted();
       const applicationState = (await this.applicationState.read()).value;
       const trustDecision = await this.trust.decisionFor(identity);
+      const restoredWorkspace = await this.workspaceFor(identity).current?.();
       signal.throwIfAborted();
       if (!this.isCurrent(generation)) return { status: "cancelled", snapshot: this.snapshot() };
       const active: ActiveProject = {
@@ -206,7 +230,7 @@ export class ProjectManager {
         detection,
         trust: trustDecision ?? "undecided",
         personalState: applicationState.personalStateByInstance[identity.instanceKey] ?? {},
-        workspace: null,
+        workspace: restoredWorkspace ? publicWorkspace(restoredWorkspace, this.now()) : null,
       };
       this.update({
         active,

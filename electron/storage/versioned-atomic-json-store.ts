@@ -22,7 +22,7 @@ export interface AtomicJsonOperationOptions {
   signal?: AbortSignal;
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncDirectory(directory: string): Promise<void> {
   try {
     const handle = await open(directory, "r");
     try {
@@ -30,7 +30,10 @@ async function syncDirectory(directory: string): Promise<void> {
     } finally {
       await handle.close();
     }
-  } catch {
+  } catch (cause) {
+    if (!isUnsupportedDirectoryFsyncError(cause)) {
+      throw cause;
+    }
     // Directory fsync is unsupported on some platforms and filesystems.
   }
 }
@@ -143,4 +146,34 @@ export class VersionedAtomicJsonStore<T> {
       throw cause;
     }
   }
+}
+const PORTABLE_DIRECTORY_FSYNC_UNSUPPORTED_CODES = new Set([
+  "EINVAL",
+  "ENOTSUP",
+  "EISDIR",
+]);
+
+const WINDOWS_DIRECTORY_FSYNC_UNSUPPORTED_CODES = new Set(["EACCES", "EPERM"]);
+
+function directoryFsyncErrorCode(cause: unknown): string | undefined {
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) {
+    return undefined;
+  }
+
+  return typeof cause.code === "string" ? cause.code : undefined;
+}
+
+export function isUnsupportedDirectoryFsyncError(
+  cause: unknown,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const code = directoryFsyncErrorCode(cause);
+  if (code === undefined) {
+    return false;
+  }
+
+  return (
+    PORTABLE_DIRECTORY_FSYNC_UNSUPPORTED_CODES.has(code) ||
+    (platform === "win32" && WINDOWS_DIRECTORY_FSYNC_UNSUPPORTED_CODES.has(code))
+  );
 }

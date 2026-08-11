@@ -101,7 +101,7 @@ export const personalStateInputSchema = z.object({
     lastRoute: z.string().startsWith("/").max(2048).refine((route) => !route.startsWith("//"), {
       message: "route must not be scheme-relative",
     }).optional(),
-    selectedSection: z.enum(["overview", "components", "design-system", "assets", "routes", "servers"]).optional(),
+    selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "servers"]).optional(),
   }).strict(),
 }).strict();
 
@@ -158,7 +158,7 @@ const identitySchema = z.object({ projectId: z.string(), instanceKey: z.string()
 const personalStateSchema = z.object({
   selectedRuntimeProfile: z.string().optional(),
   lastRoute: z.string().startsWith("/").refine((route) => !route.startsWith("//")).optional(),
-  selectedSection: z.enum(["overview", "components", "design-system", "assets", "routes", "servers"]).optional(),
+  selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "servers"]).optional(),
 }).strict();
 const projectDetectionSchema = z.object({
   canonicalPath: z.string(),

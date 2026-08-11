@@ -10,11 +10,14 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from "electron";
-import { RuntimeWorkspaceProvider } from "./runtime-workspaces/provider.js";
+import { RuntimeWorkspaceRegistry } from "./runtime-workspaces/registry.js";
 import { ApplicationStateStore } from "./storage/application-state-store.js";
 import { ProjectTrustStore } from "./projects/project-trust-store.js";
 import { ProjectManager } from "./projects/project-manager.js";
+import { ProjectActivityCoordinator } from "./projects/project-activity.js";
 import { registerProjectIpc } from "./ipc/project-ipc.js";
+import { registerChangeIpc } from "./ipc/change-ipc.js";
+import { ChangeService } from "./changes/change-service.js";
 import { CanvasController } from "./canvas-controller.js";
 import { WindowStateStore } from "./storage/window-state-store.js";
 
@@ -46,15 +49,21 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
   const applicationState = new ApplicationStateStore(path.join(userData, "state", "application.json"));
   const trust = new ProjectTrustStore(path.join(userData, "state", "project-trust.json"));
   const windowStateStore = new WindowStateStore(path.join(userData, "state", "window.json"));
+  const workspaces = new RuntimeWorkspaceRegistry({ userDataPath: userData });
+  const projectActivity = new ProjectActivityCoordinator();
   let storedWindowState = (await windowStateStore.read()).value;
   let windowStateWrite: Promise<void> = Promise.resolve();
   const projectManager = new ProjectManager({
     applicationState,
     trust,
-    createWorkspace: (identity) => new RuntimeWorkspaceProvider({
-      userDataPath: userData,
-      localInstanceKey: identity.instanceKey,
-    }),
+    createWorkspace: (identity) => workspaces.for(identity),
+    switchGuard: projectActivity,
+  });
+  const changeService = new ChangeService({
+    userDataPath: userData,
+    projects: projectManager,
+    workspaces,
+    activity: projectActivity,
   });
 
   let mainWindow: BrowserWindow | null = null;
@@ -127,6 +136,12 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
     getWindow: () => mainWindow,
     assertTrustedSender,
   });
+  const disposeChangeIpc = registerChangeIpc({
+    ipcMain,
+    service: changeService,
+    getWindow: () => mainWindow,
+    assertTrustedSender,
+  });
   const canvasController = new CanvasController({
     ipcMain,
     shell,
@@ -150,8 +165,10 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
       }
       await windowStateWrite;
       canvasController.dispose();
+      disposeChangeIpc();
       disposeProjectIpc();
       projectManager.dispose();
+      workspaces.clear();
       mainWindow?.destroy();
       mainWindow = null;
     },

@@ -5,6 +5,7 @@ import {
   ChevronsUpDownIcon,
   FolderOpenIcon,
   FolderPlusIcon,
+  FileDiffIcon,
   ImageIcon,
   InfoIcon,
   LayoutDashboardIcon,
@@ -77,11 +78,13 @@ import {
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { useProjects } from "@/projects/use-projects";
+import { ChangeWorkspace, useChanges } from "@/changes";
 
-type ProjectSection = "overview" | "components" | "design-system" | "assets" | "routes" | "servers";
+type ProjectSection = "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "servers";
 
 const sections = [
   { id: "overview", label: "Overview", icon: LayoutDashboardIcon },
+  { id: "changes", label: "Changes", icon: FileDiffIcon },
   { id: "components", label: "Components", icon: BlocksIcon },
   { id: "design-system", label: "Design system", icon: PaletteIcon },
   { id: "assets", label: "Assets", icon: ImageIcon },
@@ -364,7 +367,7 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
   return <Item size="xs" className="rounded-none px-0"><ItemContent><ItemDescription>{label}</ItemDescription></ItemContent><ItemActions><span className={mono ? "max-w-64 truncate font-mono text-xs" : "text-xs"} title={value}>{value}</span></ItemActions></Item>;
 }
 
-function PlaceholderSection({ section }: { section: Exclude<ProjectSection, "overview"> }) {
+function PlaceholderSection({ section }: { section: Exclude<ProjectSection, "overview" | "changes"> }) {
   const details = {
     components: [BlocksIcon, "Components", "No components have been indexed yet."],
     "design-system": [PaletteIcon, "Design system", "Brand tokens and reusable styles will live here."],
@@ -448,7 +451,9 @@ function ProjectSettingsControl({ active, project }: { active: ActiveProject; pr
 }
 
 function ProjectStudio({ active, project }: { active: ActiveProject; project: ReturnType<typeof useProjects> }) {
+  const changes = useChanges(active.generation, active.identity.instanceKey);
   const [section, setSection] = useState<ProjectSection>(active.personalState.selectedSection ?? "overview");
+  const projectControlsBusy = project.busy || changes.operation === "applying" || changes.operation === "recovering";
   const selectSection = (next: ProjectSection) => {
     setSection(next);
     void project.updatePersonalState(active.generation, { ...active.personalState, selectedSection: next });
@@ -464,12 +469,12 @@ function ProjectStudio({ active, project }: { active: ActiveProject; project: Re
               <div className="min-w-0 flex-1 text-left"><div className="truncate text-sm font-medium">{active.manifest.name}</div><div className="truncate text-xs text-muted-foreground">{active.identity.canonicalPath}</div></div>
               <ChevronsUpDownIcon />
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-72" align="start"><DropdownMenuGroup><DropdownMenuLabel>Project</DropdownMenuLabel><DropdownMenuItem disabled={project.busy} onClick={() => void project.pickAndOpen()}><FolderOpenIcon data-icon="inline-start" />Open another project</DropdownMenuItem><DropdownMenuItem disabled={project.busy} onClick={() => void project.refresh(active.generation)}><RefreshCwIcon data-icon="inline-start" />Refresh detection</DropdownMenuItem></DropdownMenuGroup><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem disabled={project.busy} variant="destructive" onClick={() => void project.close(active.generation)}><XIcon data-icon="inline-start" />Close project</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
+            <DropdownMenuContent className="w-72" align="start"><DropdownMenuGroup><DropdownMenuLabel>Project</DropdownMenuLabel><DropdownMenuItem disabled={projectControlsBusy} onClick={() => void project.pickAndOpen()}><FolderOpenIcon data-icon="inline-start" />Open another project</DropdownMenuItem><DropdownMenuItem disabled={projectControlsBusy} onClick={() => void project.refresh(active.generation)}><RefreshCwIcon data-icon="inline-start" />Refresh detection</DropdownMenuItem></DropdownMenuGroup><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem disabled={projectControlsBusy} variant="destructive" onClick={() => void project.close(active.generation)}><XIcon data-icon="inline-start" />Close project</DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent>
           </DropdownMenu>
         </SidebarHeader>
         <SidebarContent>
-          <SidebarGroup><SidebarGroupLabel>Project</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sections.slice(0, 1).map(({ id, label, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton disabled={project.busy} isActive={section === id} tooltip={label} onClick={() => selectSection(id)}><Icon /><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
-          <SidebarGroup><SidebarGroupLabel>Library</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sections.slice(1, 5).map(({ id, label, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton disabled={project.busy} isActive={section === id} tooltip={label} onClick={() => selectSection(id)}><Icon /><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
+          <SidebarGroup><SidebarGroupLabel>Project</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sections.slice(0, 2).map(({ id, label, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton disabled={project.busy} isActive={section === id} tooltip={label} onClick={() => selectSection(id)}><Icon /><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
+          <SidebarGroup><SidebarGroupLabel>Library</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sections.slice(2, 5).map(({ id, label, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton disabled={project.busy} isActive={section === id} tooltip={label} onClick={() => selectSection(id)}><Icon /><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
           <SidebarGroup><SidebarGroupLabel>Runtime</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>{sections.slice(5).map(({ id, label, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton disabled={project.busy} isActive={section === id} tooltip={label} onClick={() => selectSection(id)}><Icon /><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroupContent></SidebarGroup>
         </SidebarContent>
         <SidebarRail />
@@ -477,7 +482,25 @@ function ProjectStudio({ active, project }: { active: ActiveProject; project: Re
       <SidebarInset className="min-h-0 min-w-0">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4"><SidebarTrigger /><Separator orientation="vertical" className="h-4" /><div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{sections.find((item) => item.id === section)?.label}</h1></div>{project.snapshot?.transition && <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />{project.snapshot.transition.kind.replaceAll("-", " ")}</div>}<ProjectSettingsControl active={active} project={project} /><TrustControl active={active} project={project} /></header>
         {(project.snapshot?.problem || project.error) && <div className="px-4 pt-4">{project.snapshot?.problem ? <ProblemAlert snapshot={project.snapshot} /> : <Alert variant="destructive"><InfoIcon /><AlertTitle>Project operation failed</AlertTitle><AlertDescription>{project.error}</AlertDescription></Alert>}</div>}
-        <div className="min-h-0 flex-1">{section === "overview" ? <ProjectOverview active={active} /> : <PlaceholderSection section={section} />}</div>
+        <div className="min-h-0 flex-1">{section === "overview" ? <ProjectOverview active={active} /> : section === "changes" ? (
+          <ChangeWorkspace
+            changeSet={changes.changeSet}
+            workspacePrepared={Boolean(active.workspace)}
+            trusted={active.trust === "trusted"}
+            operation={changes.operation}
+            busy={changes.busy}
+            hydrated={changes.hydrated}
+            problem={changes.problem}
+            onPrepareWorkspace={() => project.prepareWorkspace(active.generation).then(() => undefined)}
+            onScan={() => changes.scan().then(() => undefined)}
+            onSelectionChange={(selection) => changes.updateSelection(selection).then(() => undefined)}
+            onPrepareApply={changes.prepareApply}
+            onCommitApply={(prepared) => changes.commitApply(prepared).then(() => undefined)}
+            onCancelPrepared={(prepared) => changes.cancelPrepared(prepared).then(() => undefined)}
+            onDiscard={(snapshot) => changes.discard(snapshot).then(() => undefined)}
+            onRecover={(snapshot, action) => changes.recover(snapshot, action).then(() => undefined)}
+          />
+        ) : <PlaceholderSection section={section} />}</div>
         <footer className="flex h-10 shrink-0 items-center justify-between border-t px-4 text-xs text-muted-foreground"><span className="truncate font-mono">{active.identity.canonicalPath}</span>{active.trust === "trusted" && !active.workspace && <Button size="xs" variant="ghost" disabled={project.busy} onClick={() => void project.prepareWorkspace(active.generation)}><PlayIcon data-icon="inline-start" />Prepare workspace</Button>}</footer>
       </SidebarInset>
     </SidebarProvider>

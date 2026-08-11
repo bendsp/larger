@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { build } from "esbuild";
 import { _electron as electron } from "playwright-core";
+import { RuntimeWorkspaceProvider } from "../../electron/runtime-workspaces/provider.js";
 
 async function buildFixtureMain(temporary: string): Promise<string> {
   const fixtureMain = path.join(temporary, "fixture-main.cjs");
@@ -20,6 +21,53 @@ async function buildFixtureMain(temporary: string): Promise<string> {
     external: ["electron"],
   });
   return fixtureMain;
+}
+
+async function closeElectronApplication(application: Awaited<ReturnType<typeof electron.launch>>): Promise<void> {
+  let processHandle: ReturnType<typeof application.process>;
+  try {
+    processHandle = application.process();
+  } catch {
+    return;
+  }
+  if (processHandle.exitCode !== null || processHandle.killed) return;
+  let timeout: NodeJS.Timeout | undefined;
+  await Promise.race([
+    application.close().catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, 2_000);
+      timeout.unref();
+    }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (processHandle.exitCode === null && !processHandle.killed) {
+    try {
+      processHandle.kill("SIGKILL");
+    } catch {
+      // The Electron process may exit between the state check and the fallback signal.
+    }
+  }
+}
+
+async function removeTestTree(root: string): Promise<void> {
+  async function makeWritable(entryPath: string): Promise<void> {
+    let entry;
+    try {
+      entry = await lstat(entryPath);
+    } catch {
+      return;
+    }
+    if (entry.isSymbolicLink()) return;
+    if (!entry.isDirectory()) {
+      await chmod(entryPath, 0o600);
+      return;
+    }
+    await chmod(entryPath, 0o700);
+    for (const child of await readdir(entryPath)) await makeWritable(path.join(entryPath, child));
+  }
+
+  await makeWritable(root);
+  await rm(root, { recursive: true, force: true });
 }
 
 async function writeProject(projectPath: string, projectId: string, name: string, initialized = true): Promise<void> {
@@ -72,7 +120,7 @@ async function serveProductionRenderer(t: test.TestContext): Promise<string> {
 
 test("real Electron exposes the narrow bridge and handles cancelled and selected directories", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-electron-test-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  t.after(() => removeTestTree(temporary));
   const fixtureMain = await buildFixtureMain(temporary);
   const projectPath = path.join(temporary, "project");
   await writeProject(projectPath, "electron-fixture", "Electron fixture");
@@ -92,6 +140,7 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   const page = await application.firstWindow();
   const boundary = await page.evaluate(() => ({
     projects: Object.keys(window.larger?.projects ?? {}).sort(),
+    changes: Object.keys(window.larger?.changes ?? {}).sort(),
     hasProcess: "process" in window,
     hasRequire: "require" in window,
     hasIpcRenderer: "ipcRenderer" in window,
@@ -102,6 +151,9 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   assert.deepEqual(boundary.projects, [
     "close", "dismissPending", "getSnapshot", "initialize", "onSnapshot", "openRecent", "pickAndOpen",
     "prepareWorkspace", "refresh", "removeRecent", "setTrust", "updateManifest", "updatePersonalState",
+  ]);
+  assert.deepEqual(boundary.changes, [
+    "commitApply", "discard", "getSnapshot", "onSnapshot", "prepareApply", "recover", "scan", "updateSelection",
   ]);
   const result = await page.evaluate(async () => {
     const before = await window.larger!.projects.getSnapshot();
@@ -118,7 +170,7 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
 
 test("production renderer switches through pending setup and restores personal UI state after relaunch", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-renderer-test-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  t.after(() => removeTestTree(temporary));
   const fixtureMain = await buildFixtureMain(temporary);
   const rendererUrl = await serveProductionRenderer(t);
   const userData = path.join(temporary, "user-data");
@@ -142,7 +194,7 @@ test("production renderer switches through pending setup and restores personal U
   });
 
   const firstApplication = await launch();
-  t.after(() => firstApplication.close());
+  t.after(() => closeElectronApplication(firstApplication));
   const firstPage = await firstApplication.firstWindow();
   await firstPage.getByRole("heading", { name: "Larger" }).waitFor({ timeout: 5_000 });
   await firstPage.getByRole("button", { name: "Open project" }).click();
@@ -171,11 +223,97 @@ test("production renderer switches through pending setup and restores personal U
   assert.equal(await firstPage.getByLabel("Entry route").inputValue(), "missing-leading-slash");
   await firstPage.getByRole("button", { name: "Cancel" }).click();
   await firstPage.getByText("Project assets will be indexed without moving them from source.").waitFor({ timeout: 5_000 });
-  await firstApplication.close();
+  await closeElectronApplication(firstApplication);
 
   const restoredApplication = await launch();
-  t.after(() => restoredApplication.close());
+  t.after(() => closeElectronApplication(restoredApplication));
   const restoredPage = await restoredApplication.firstWindow();
   await restoredPage.getByText("Renderer first").first().waitFor({ timeout: 5_000 });
   await restoredPage.getByText("Project assets will be indexed without moving them from source.").waitFor({ timeout: 5_000 });
+});
+
+test("production renderer reviews one hunk and recovers the prepared plan after relaunch", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-changes-renderer-test-"));
+  t.after(() => removeTestTree(temporary));
+  const fixtureMain = await buildFixtureMain(temporary);
+  const rendererUrl = await serveProductionRenderer(t);
+  const userData = path.join(temporary, "user-data");
+  const projectPath = path.join(temporary, "project");
+  await writeProject(projectPath, "renderer-changes", "Renderer changes");
+  await mkdir(path.join(projectPath, "src"));
+  const baseline = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+  await writeFile(path.join(projectPath, "src/app.txt"), baseline);
+  await writeFile(path.join(projectPath, "src/unrelated.txt"), "clean\n");
+  const require = createRequire(import.meta.url);
+  const executablePath = require("electron") as string;
+  const launch = () => electron.launch({
+    executablePath,
+    args: [fixtureMain],
+    env: {
+      ...process.env,
+      LARGER_ELECTRON_TEST_USER_DATA: userData,
+      LARGER_ELECTRON_TEST_PRELOAD: path.resolve(".larger/electron/preload.cjs"),
+      LARGER_ELECTRON_TEST_PROJECT: projectPath,
+      LARGER_ELECTRON_TEST_RENDERER_URL: rendererUrl,
+      LARGER_ELECTRON_TEST_CANCEL_FIRST: "false",
+    },
+  });
+
+  const firstApplication = await launch();
+  t.after(() => closeElectronApplication(firstApplication));
+  const firstPage = await firstApplication.firstWindow();
+  await firstPage.getByRole("heading", { name: "Larger" }).waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Open project" }).click();
+  await firstPage.getByText("Renderer changes").first().waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Review trust" }).click();
+  await firstPage.getByRole("button", { name: "Trust project" }).click();
+  await firstPage.getByText("Trusted", { exact: true }).waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Changes", exact: true }).click({ timeout: 3_000 });
+  await firstPage.getByRole("button", { name: "Prepare workspace" }).first().click({ timeout: 3_000 });
+  await firstPage.getByRole("button", { name: "Scan again" }).waitFor({ timeout: 10_000 });
+
+  const active = await firstPage.evaluate(() => window.larger!.projects.getSnapshot());
+  assert.ok(active.active);
+  const provider = new RuntimeWorkspaceProvider({
+    userDataPath: userData,
+    localInstanceKey: active.active.identity.instanceKey,
+  });
+  const workspace = await provider.current();
+  assert.ok(workspace);
+  const runtime = baseline
+    .replace("line 1\n", "LINE ONE\n")
+    .replace("line 14\n", "LINE FOURTEEN\n");
+  await writeFile(path.join(workspace.runtimePath, "src/app.txt"), runtime);
+  await firstPage.getByRole("button", { name: "Scan again" }).click({ timeout: 3_000 });
+  await firstPage.getByRole("heading", { name: "Runtime change review" }).waitFor({ timeout: 10_000 });
+  await firstPage.getByText("0 of 2 hunks included").waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("checkbox", { name: /Include hunk/ }).first().click({ timeout: 3_000 });
+  await firstPage.getByText("1 of 2 hunks included").waitFor({ timeout: 5_000 });
+  const dirtyUnrelated = Buffer.from("dirty unrelated\r\n", "utf8");
+  await writeFile(path.join(projectPath, "src/unrelated.txt"), dirtyUnrelated);
+  await firstPage.getByRole("button", { name: "Apply 1 hunk" }).click({ timeout: 3_000 });
+  await firstPage.getByRole("heading", { name: "Apply selected changes to source?" }).waitFor({ timeout: 10_000 });
+  await firstPage.getByRole("button", { name: "Cancel" }).click({ timeout: 3_000 });
+  await firstPage.getByRole("heading", { name: "Apply selected changes to source?" }).waitFor({ state: "hidden", timeout: 10_000 });
+  await firstPage.getByRole("button", { name: "Apply 1 hunk" }).click({ timeout: 3_000 });
+  await firstPage.getByRole("heading", { name: "Apply selected changes to source?" }).waitFor({ timeout: 10_000 });
+  const screenshotPath = process.env.LARGER_E2E_SCREENSHOT;
+  if (screenshotPath) await firstPage.screenshot({ path: screenshotPath });
+  await closeElectronApplication(firstApplication);
+
+  const restoredApplication = await launch();
+  t.after(() => closeElectronApplication(restoredApplication));
+  const restoredPage = await restoredApplication.firstWindow();
+  await restoredPage.getByText("Renderer changes").first().waitFor({ timeout: 10_000 });
+  await restoredPage.getByRole("button", { name: "Changes", exact: true }).click({ timeout: 3_000 });
+  await restoredPage.getByText("Source transaction needs attention").waitFor({ timeout: 10_000 });
+  await restoredPage.getByRole("button", { name: "Roll forward safely" }).click({ timeout: 3_000 });
+  await restoredPage.getByText("Selected changes applied").waitFor({ timeout: 10_000 });
+
+  const expected = baseline.replace("line 1\n", "LINE ONE\n");
+  const appliedSource = await readFile(path.join(projectPath, "src/app.txt"), "utf8");
+  const unrelatedSource = await readFile(path.join(projectPath, "src/unrelated.txt"));
+  assert.equal(appliedSource, expected);
+  assert.deepEqual(unrelatedSource, dirtyUnrelated);
+  await closeElectronApplication(restoredApplication);
 });

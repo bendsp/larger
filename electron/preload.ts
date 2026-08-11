@@ -9,6 +9,13 @@ import {
 import type { ZodType } from "zod";
 import type { ProjectManifest, ProjectPersonalState } from "../src/project-contracts.js";
 import type { LargerCanvasBridge } from "./bridge.js";
+import {
+  CHANGE_IPC_CHANNELS,
+  changeOperationResultSchema,
+  changeWorkspaceSnapshotSchema,
+  preparedApplyResultSchema,
+  type LargerChangesBridge,
+} from "../src/change-ipc.js";
 
 async function invoke<T>(channel: string, schema: ZodType<T>, input?: unknown): Promise<T> {
   const envelope = await ipcRenderer.invoke(channel, input) as IpcEnvelope<T>;
@@ -63,6 +70,44 @@ const projects: LargerProjectsBridge = {
   },
 };
 
+const changes: LargerChangesBridge = {
+  getSnapshot: (generation) => invoke(CHANGE_IPC_CHANNELS.getSnapshot, changeWorkspaceSnapshotSchema, { generation }),
+  scan: (generation) => invoke(CHANGE_IPC_CHANNELS.scan, changeOperationResultSchema, { generation }),
+  updateSelection: (generation, changeSetId, expectedRevision, selection) => invoke(
+    CHANGE_IPC_CHANNELS.updateSelection,
+    changeOperationResultSchema,
+    { generation, changeSetId, expectedRevision, selection },
+  ),
+  prepareApply: (generation, changeSetId, expectedRevision) => invoke(
+    CHANGE_IPC_CHANNELS.prepareApply,
+    preparedApplyResultSchema,
+    { generation, changeSetId, expectedRevision },
+  ),
+  commitApply: (generation, transactionId, planDigest) => invoke(
+    CHANGE_IPC_CHANNELS.commitApply,
+    changeOperationResultSchema,
+    { generation, transactionId, planDigest },
+  ),
+  discard: (generation, changeSetId, expectedRevision, confirmUnappliedLoss) => invoke(
+    CHANGE_IPC_CHANNELS.discard,
+    changeOperationResultSchema,
+    { generation, changeSetId, expectedRevision, confirmUnappliedLoss },
+  ),
+  recover: (generation, transactionId, action) => invoke(
+    CHANGE_IPC_CHANNELS.recover,
+    changeOperationResultSchema,
+    { generation, transactionId, action },
+  ),
+  onSnapshot(listener) {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown) => {
+      const parsed = changeWorkspaceSnapshotSchema.safeParse(snapshot);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(CHANGE_IPC_CHANNELS.snapshot, handler);
+    return () => ipcRenderer.removeListener(CHANGE_IPC_CHANNELS.snapshot, handler);
+  },
+};
+
 const canvas: LargerCanvasBridge = {
   load: (generation, url) => ipcRenderer.invoke("canvas:load", { generation, url }),
   navigate: (generation, url) => ipcRenderer.invoke("canvas:navigate", { generation, url }),
@@ -76,5 +121,5 @@ const canvas: LargerCanvasBridge = {
   },
 };
 
-contextBridge.exposeInMainWorld("larger", { projects });
+contextBridge.exposeInMainWorld("larger", { projects, changes });
 contextBridge.exposeInMainWorld("largerCanvas", canvas);

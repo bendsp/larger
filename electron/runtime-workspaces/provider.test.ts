@@ -125,6 +125,23 @@ test("captures ordinary dirty, untracked, binary, executable, and internal symli
   assert.equal((await lstat(path.join(workspace.baselinePath, "tree", "src", "message.txt"))).mode & 0o222, 0);
 });
 
+test("resetCurrent replaces edited runtime from its immutable baseline", async (t) => {
+  const temporary = await temporaryDirectory(t);
+  const source = path.join(temporary, "source");
+  const userData = path.join(temporary, "user-data");
+  await mkdir(source);
+  await createFixture(source);
+  const runtimeProvider = provider(userData, "reset-runtime", new PortableCopyMaterializer());
+  const first = await runtimeProvider.stage(source);
+  await writeFile(path.join(first.runtimePath, "src", "message.txt"), "discard me\n");
+  const reset = await runtimeProvider.resetCurrent();
+  assert.notEqual(reset.runtimeId, first.runtimeId);
+  assert.equal(reset.baselineIdentity, first.baselineIdentity);
+  assert.equal(await readFile(path.join(reset.runtimePath, "src", "message.txt"), "utf8"), "local dirty work\n");
+  assert.equal((await runtimeProvider.current())?.runtimeId, reset.runtimeId);
+  await assert.rejects(lstat(first.runtimePath), { code: "ENOENT" });
+});
+
 test("baseline verification streams large files and can cancel between chunks", async (t) => {
   const temporary = await temporaryDirectory(t);
   const source = path.join(temporary, "source");

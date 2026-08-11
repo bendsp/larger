@@ -52,7 +52,7 @@ const EXCLUDED_AT_PROJECT_ROOT = new Set([
 
 const EXCLUDED_YARN_GENERATED_STATE = new Set(["unplugged", "install-state.gz", "build-state.yml"]);
 
-function isExcluded(relativeDirectory: string, name: string): boolean {
+export function isInventoryPathExcluded(relativeDirectory: string, name: string): boolean {
   if (EXCLUDED_AT_ANY_DEPTH.has(name)) return true;
   if (relativeDirectory === "" && EXCLUDED_AT_PROJECT_ROOT.has(name)) return true;
   const insideYarnDirectory = relativeDirectory === ".yarn" || relativeDirectory.endsWith("/.yarn");
@@ -288,7 +288,7 @@ export async function captureInventory(
     );
     for (const child of children) {
       throwIfAborted(signal);
-      if (isExcluded(relativeDirectory, child.name)) {
+      if (isInventoryPathExcluded(relativeDirectory, child.name)) {
         continue;
       }
       const relativePath = toManifestPath(path.join(relativeDirectory, child.name));
@@ -429,7 +429,7 @@ async function listIncludedPaths(sourceRoot: string, signal?: AbortSignal): Prom
     const children = await readdir(directory, { withFileTypes: true });
     for (const child of children) {
       signal?.throwIfAborted();
-      if (isExcluded(relativeDirectory, child.name)) continue;
+      if (isInventoryPathExcluded(relativeDirectory, child.name)) continue;
       const relativePath = toManifestPath(path.join(relativeDirectory, child.name));
       paths.push(relativePath);
       const stat = await lstat(fromManifestPath(sourceRoot, relativePath));

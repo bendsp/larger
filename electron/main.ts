@@ -3,25 +3,38 @@ import { createDesktopApplication, type DesktopApplication } from "./application
 
 let desktop: DesktopApplication | null = null;
 let quitting = false;
+const ownsInstanceLock = app.requestSingleInstanceLock();
 
-void app.whenReady().then(async () => {
-  desktop = await createDesktopApplication();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) desktop?.createWindow();
+if (!ownsInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const window = desktop?.getWindow();
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
   });
-});
 
-app.on("before-quit", (event) => {
-  if (quitting || !desktop) return;
-  event.preventDefault();
-  const application = desktop;
-  desktop = null;
-  void application.dispose().finally(() => {
-    quitting = true;
-    app.quit();
+  void app.whenReady().then(async () => {
+    desktop = await createDesktopApplication();
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) desktop?.createWindow();
+    });
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app.on("before-quit", (event) => {
+    if (quitting || !desktop) return;
+    event.preventDefault();
+    const application = desktop;
+    desktop = null;
+    void application.dispose().finally(() => {
+      quitting = true;
+      app.quit();
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+}

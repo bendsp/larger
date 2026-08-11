@@ -361,6 +361,57 @@ export class RuntimeWorkspaceProvider {
     });
   }
 
+  resetCurrent(signal?: AbortSignal): Promise<RuntimeWorkspace> {
+    return this.serialize(async () => {
+      signal?.throwIfAborted();
+      const current = await this.current();
+      if (!current) throw new Error("There is no current runtime workspace to reset.");
+      const paths = await createWorkspacePaths(this.options.userDataPath, this.options.localInstanceKey);
+      const operationId = randomUUID();
+      const stagingPath = path.join(paths.stagingRoot, `reset-${operationId}`);
+      const stagedRuntimePath = path.join(stagingPath, "runtime");
+      let installedRuntimePath: string | undefined;
+      let published = false;
+      await mkdir(stagingPath, { mode: 0o700 });
+      try {
+        await verifyBaselineTree(path.join(current.baselinePath, "tree"), current.manifest, signal);
+        await this.materializer.materialize(
+          path.join(current.baselinePath, "tree"),
+          stagedRuntimePath,
+          current.manifest,
+          signal,
+        );
+        signal?.throwIfAborted();
+        const runtimeId = randomUUID();
+        const runtimePath = path.join(paths.runtimesRoot, runtimeId);
+        await assertManagedPathParents(paths.instanceRoot, runtimePath);
+        await rename(stagedRuntimePath, runtimePath);
+        installedRuntimePath = runtimePath;
+        await syncDirectory(paths.runtimesRoot);
+        signal?.throwIfAborted();
+        await publishJsonAtomically(paths.currentPointerPath, {
+          formatVersion: 1,
+          baselineIdentity: current.baselineIdentity,
+          runtimeId,
+          publishedAt: new Date().toISOString(),
+        } satisfies CurrentWorkspace, signal);
+        published = true;
+        await removeStagingTree(current.runtimePath).catch(() => undefined);
+        await syncDirectory(paths.runtimesRoot).catch(() => undefined);
+        return {
+          baselineIdentity: current.baselineIdentity,
+          baselinePath: current.baselinePath,
+          runtimeId,
+          runtimePath,
+          manifest: current.manifest,
+        };
+      } finally {
+        if (!published && installedRuntimePath) await removeStagingTree(installedRuntimePath);
+        await removeStagingTree(stagingPath);
+      }
+    });
+  }
+
   async current(): Promise<RuntimeWorkspace | undefined> {
     const paths = await createWorkspacePaths(this.options.userDataPath, this.options.localInstanceKey);
     let raw: string;
