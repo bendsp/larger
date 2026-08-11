@@ -38,6 +38,13 @@ import type {
   WorkspacePaths,
 } from "./types.js";
 
+function normalizeStageOptions(options?: AbortSignal | StageWorkspaceOptions): StageWorkspaceOptions {
+  if (!options) return {};
+  return "aborted" in options && typeof options.addEventListener === "function" && typeof options.throwIfAborted === "function"
+    ? { signal: options }
+    : options as StageWorkspaceOptions;
+}
+
 async function syncFile(filePath: string): Promise<void> {
   const handle = await open(filePath, "r");
   try {
@@ -328,6 +335,15 @@ export class RuntimeWorkspaceProvider {
         await emitPhase("runtime-materialized", options);
 
         const runtimeId = randomUUID();
+        await emitPhase("runtime-preparation-started", options);
+        await options.prepareRuntime?.({
+          baselineIdentity: manifest.identity,
+          baselinePath,
+          runtimeId,
+          runtimePath: stagedRuntimePath,
+          manifest: installedManifest,
+        });
+        await emitPhase("runtime-prepared", options);
         const runtimePath = path.join(paths.runtimesRoot, runtimeId);
         await assertManagedPathParents(paths.instanceRoot, runtimePath);
         await rename(stagedRuntimePath, runtimePath);
@@ -361,9 +377,10 @@ export class RuntimeWorkspaceProvider {
     });
   }
 
-  resetCurrent(signal?: AbortSignal): Promise<RuntimeWorkspace> {
+  resetCurrent(optionsOrSignal?: AbortSignal | StageWorkspaceOptions): Promise<RuntimeWorkspace> {
     return this.serialize(async () => {
-      signal?.throwIfAborted();
+      const options = normalizeStageOptions(optionsOrSignal);
+      options.signal?.throwIfAborted();
       const current = await this.current();
       if (!current) throw new Error("There is no current runtime workspace to reset.");
       const paths = await createWorkspacePaths(this.options.userDataPath, this.options.localInstanceKey);
@@ -374,27 +391,36 @@ export class RuntimeWorkspaceProvider {
       let published = false;
       await mkdir(stagingPath, { mode: 0o700 });
       try {
-        await verifyBaselineTree(path.join(current.baselinePath, "tree"), current.manifest, signal);
+        await verifyBaselineTree(path.join(current.baselinePath, "tree"), current.manifest, options.signal);
         await this.materializer.materialize(
           path.join(current.baselinePath, "tree"),
           stagedRuntimePath,
           current.manifest,
-          signal,
+          options.signal,
         );
-        signal?.throwIfAborted();
+        await emitPhase("runtime-materialized", options);
         const runtimeId = randomUUID();
+        await emitPhase("runtime-preparation-started", options);
+        await options.prepareRuntime?.({
+          baselineIdentity: current.baselineIdentity,
+          baselinePath: current.baselinePath,
+          runtimeId,
+          runtimePath: stagedRuntimePath,
+          manifest: current.manifest,
+        });
+        await emitPhase("runtime-prepared", options);
         const runtimePath = path.join(paths.runtimesRoot, runtimeId);
         await assertManagedPathParents(paths.instanceRoot, runtimePath);
         await rename(stagedRuntimePath, runtimePath);
         installedRuntimePath = runtimePath;
         await syncDirectory(paths.runtimesRoot);
-        signal?.throwIfAborted();
+        options.signal?.throwIfAborted();
         await publishJsonAtomically(paths.currentPointerPath, {
           formatVersion: 1,
           baselineIdentity: current.baselineIdentity,
           runtimeId,
           publishedAt: new Date().toISOString(),
-        } satisfies CurrentWorkspace, signal);
+        } satisfies CurrentWorkspace, options.signal);
         published = true;
         await removeStagingTree(current.runtimePath).catch(() => undefined);
         await syncDirectory(paths.runtimesRoot).catch(() => undefined);

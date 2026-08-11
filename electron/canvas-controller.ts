@@ -3,11 +3,12 @@ import type {
   IpcMain,
   IpcMainEvent,
   IpcMainInvokeEvent,
-  Shell,
 } from "electron";
 import { WebContentsView } from "electron";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ProjectManager } from "./projects/project-manager.js";
+import { resolveCanvasNavigation } from "./canvas-security.js";
 
 const generationSchema = z.number().int().nonnegative();
 const boundsSchema = z.object({
@@ -16,13 +17,24 @@ const boundsSchema = z.object({
   width: z.number().finite().nonnegative(),
   height: z.number().finite().nonnegative(),
 }).strict();
-const loadSchema = z.object({ generation: generationSchema, url: z.string().url() }).strict();
+const surfaceIdSchema = z.string().min(1).max(256);
+const routeSchema = z.string().startsWith("/").max(2048)
+  .refine((route) => !route.startsWith("//") && !route.includes("\\"), {
+    message: "route must be project-relative",
+  });
+const loadSchema = z.object({ generation: generationSchema, surfaceId: surfaceIdSchema }).strict();
+const navigateSchema = z.object({
+  generation: generationSchema,
+  surfaceId: surfaceIdSchema,
+  route: routeSchema,
+}).strict();
 const boundsMessageSchema = z.object({ generation: generationSchema, bounds: boundsSchema }).strict();
 
 function loopbackOrigin(value: string): string | null {
   try {
     const url = new URL(value);
-    return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")
+    return url.protocol === "http:" && url.hostname === "127.0.0.1" && Boolean(url.port)
+      && !url.username && !url.password
       ? url.origin
       : null;
   } catch {
@@ -30,10 +42,15 @@ function loopbackOrigin(value: string): string | null {
   }
 }
 
+export interface CanvasRuntimeSurfaceResolver {
+  resolveSurface(generation: number, surfaceId: string): string | undefined;
+  subscribe(listener: () => void): () => void;
+}
+
 export interface CanvasControllerDependencies {
   ipcMain: IpcMain;
-  shell: Pick<Shell, "openExternal">;
   manager: ProjectManager;
+  runtime: CanvasRuntimeSurfaceResolver;
   getWindow(): BrowserWindow | null;
   assertTrustedSender(event: IpcMainInvokeEvent | IpcMainEvent): void;
 }
@@ -42,8 +59,10 @@ export class CanvasController {
   private view: WebContentsView | null = null;
   private attached = false;
   private generation: number | null = null;
+  private surfaceId: string | null = null;
   private allowedOrigin: string | null = null;
   private readonly disposeProjectSubscription: () => void;
+  private readonly disposeRuntimeSubscription: () => void;
 
   constructor(private readonly dependencies: CanvasControllerDependencies) {
     const { ipcMain } = dependencies;
@@ -51,20 +70,27 @@ export class CanvasController {
     ipcMain.handle("canvas:navigate", (event, raw) => this.navigate(event, raw));
     ipcMain.on("canvas:bounds", (event, raw) => this.setBounds(event, raw));
     ipcMain.on("canvas:show", (event, raw) => this.show(event, raw));
+    ipcMain.on("canvas:focus", (event, raw) => this.focus(event, raw));
     ipcMain.on("canvas:hide", (event) => this.hideFromRenderer(event));
     this.disposeProjectSubscription = dependencies.manager.subscribe((snapshot) => {
       const generation = snapshot.active?.generation ?? null;
-      if (generation !== this.generation) this.reset();
+      if (generation !== this.generation || snapshot.active?.trust !== "trusted") this.reset();
+    });
+    this.disposeRuntimeSubscription = dependencies.runtime.subscribe(() => {
+      if (this.generation === null || this.surfaceId === null) return;
+      if (!dependencies.runtime.resolveSurface(this.generation, this.surfaceId)) this.reset();
     });
   }
 
   dispose(): void {
     this.disposeProjectSubscription();
+    this.disposeRuntimeSubscription();
     const { ipcMain } = this.dependencies;
     ipcMain.removeHandler("canvas:load");
     ipcMain.removeHandler("canvas:navigate");
     ipcMain.removeAllListeners("canvas:bounds");
     ipcMain.removeAllListeners("canvas:show");
+    ipcMain.removeAllListeners("canvas:focus");
     ipcMain.removeAllListeners("canvas:hide");
     this.reset();
   }
@@ -74,38 +100,54 @@ export class CanvasController {
     if (!active || active.generation !== generation) throw new Error("Rejected stale canvas generation");
   }
 
-  private ensureView(generation: number): WebContentsView {
-    if (this.view && this.generation === generation) return this.view;
+  private ensureView(generation: number, surfaceId: string): WebContentsView {
+    if (this.view && this.generation === generation && this.surfaceId === surfaceId) return this.view;
     this.reset();
     this.generation = generation;
+    this.surfaceId = surfaceId;
+    const partitionKey = createHash("sha256").update(`${generation}\0${surfaceId}`).digest("hex").slice(0, 24);
     const view = new WebContentsView({
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
-        partition: `larger-canvas-${generation}`,
+        partition: `larger-canvas-${partitionKey}`,
       },
     });
     view.setBackgroundColor("#f8f5ef");
     view.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     view.webContents.session.setPermissionCheckHandler(() => false);
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (/^https?:/.test(url)) void this.dependencies.shell.openExternal(url);
-      return { action: "deny" };
-    });
+    view.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     view.webContents.on("will-navigate", (event, url) => {
       const origin = loopbackOrigin(url);
       if (!origin || (this.allowedOrigin && origin !== this.allowedOrigin)) event.preventDefault();
     });
     const sendNavigation = (_event: unknown, url: string) => {
       const window = this.dependencies.getWindow();
-      if (window && !window.isDestroyed() && this.generation !== null) {
-        window.webContents.send("canvas:navigated", { generation: this.generation, url });
+      const parsed = new URL(url);
+      if (window && !window.isDestroyed() && this.generation !== null && this.surfaceId !== null
+        && parsed.origin === this.allowedOrigin) {
+        window.webContents.send("canvas:navigated", {
+          generation: this.generation,
+          surfaceId: this.surfaceId,
+          route: `${parsed.pathname}${parsed.search}${parsed.hash}`,
+        });
       }
     };
     view.webContents.on("did-navigate", sendNavigation);
     view.webContents.on("did-navigate-in-page", sendNavigation);
+    view.webContents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown" || input.key !== "Escape") return;
+      event.preventDefault();
+      const window = this.dependencies.getWindow();
+      if (!window || window.isDestroyed() || this.generation === null || this.surfaceId === null) return;
+      window.webContents.focus();
+      window.webContents.send("canvas:focus-return", {
+        generation: this.generation,
+        surfaceId: this.surfaceId,
+      });
+    });
     this.view = view;
     return view;
   }
@@ -129,31 +171,41 @@ export class CanvasController {
     this.view?.webContents.close();
     this.view = null;
     this.generation = null;
+    this.surfaceId = null;
     this.allowedOrigin = null;
+  }
+
+  private resolveSurface(generation: number, surfaceId: string): { url: string; origin: string } {
+    this.assertGeneration(generation);
+    const url = this.dependencies.runtime.resolveSurface(generation, surfaceId);
+    const origin = url ? loopbackOrigin(url) : null;
+    if (!url || !origin) throw new Error("Rejected inactive or unsafe canvas surface");
+    return { url, origin };
   }
 
   private async load(event: IpcMainInvokeEvent, raw: unknown): Promise<{ ok: true }> {
     this.dependencies.assertTrustedSender(event);
-    const { generation, url } = loadSchema.parse(raw);
-    this.assertGeneration(generation);
-    const origin = loopbackOrigin(url);
-    if (!origin) throw new Error("Canvas only accepts loopback HTTP origins");
+    const { generation, surfaceId } = loadSchema.parse(raw);
+    const { url, origin } = this.resolveSurface(generation, surfaceId);
+    const existingSurface = Boolean(
+      this.view && this.generation === generation && this.surfaceId === surfaceId,
+    );
     this.allowedOrigin = origin;
-    const view = this.ensureView(generation);
+    const view = this.ensureView(generation, surfaceId);
     this.allowedOrigin = origin;
     this.attach();
-    await view.webContents.loadURL(url);
+    if (!existingSurface) await view.webContents.loadURL(url);
     return { ok: true };
   }
 
   private async navigate(event: IpcMainInvokeEvent, raw: unknown): Promise<{ ok: true }> {
     this.dependencies.assertTrustedSender(event);
-    const { generation, url } = loadSchema.parse(raw);
-    this.assertGeneration(generation);
-    const origin = loopbackOrigin(url);
-    if (!origin || origin !== this.allowedOrigin || !this.view || this.generation !== generation) {
+    const { generation, surfaceId, route } = navigateSchema.parse(raw);
+    const surface = this.resolveSurface(generation, surfaceId);
+    if (surface.origin !== this.allowedOrigin || !this.view || this.generation !== generation || this.surfaceId !== surfaceId) {
       throw new Error("Canvas navigation must stay on the active project origin");
     }
+    const url = resolveCanvasNavigation(surface.url, this.allowedOrigin, route);
     this.attach();
     await this.view.webContents.loadURL(url);
     return { ok: true };
@@ -183,9 +235,25 @@ export class CanvasController {
   private show(event: IpcMainEvent, raw: unknown): void {
     try {
       this.dependencies.assertTrustedSender(event);
-      const { generation } = z.object({ generation: generationSchema }).strict().parse(raw);
+      const { generation, surfaceId } = loadSchema.parse(raw);
       this.assertGeneration(generation);
-      if (this.view && this.allowedOrigin && this.generation === generation) this.attach();
+      if (this.view && this.allowedOrigin && this.generation === generation && this.surfaceId === surfaceId
+        && this.dependencies.runtime.resolveSurface(generation, surfaceId)) this.attach();
+    } catch {
+      // Fire-and-forget messages fail closed.
+    }
+  }
+
+  private focus(event: IpcMainEvent, raw: unknown): void {
+    try {
+      this.dependencies.assertTrustedSender(event);
+      const { generation, surfaceId } = loadSchema.parse(raw);
+      this.assertGeneration(generation);
+      if (this.view && this.attached && this.generation === generation && this.surfaceId === surfaceId
+        && this.dependencies.runtime.resolveSurface(generation, surfaceId)) {
+        this.dependencies.getWindow()?.focus();
+        this.view.webContents.focus();
+      }
     } catch {
       // Fire-and-forget messages fail closed.
     }

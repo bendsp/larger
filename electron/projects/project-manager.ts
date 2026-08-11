@@ -295,12 +295,34 @@ export class ProjectManager {
 
   async setTrust(generation: number, decision: "trusted" | "denied"): Promise<ProjectOperationResult> {
     const active = this.requireActive(generation);
+    if (decision === "denied") {
+      const current = this.state.active;
+      if (!current || current.identity.instanceKey !== active.identity.instanceKey) {
+        return { status: "cancelled", snapshot: this.snapshot() };
+      }
+      this.update({ active: { ...current, trust: "denied" }, problem: null });
+
+      // Revocation must survive a failed cleanup or an application crash. Keep the
+      // in-memory denial fail-closed while the durable decision is published first.
+      await this.trust.setDecision(active.identity, decision, this.now());
+      const afterPersistence = this.state.active;
+      if (!this.isCurrent(generation) || !afterPersistence || afterPersistence.identity.instanceKey !== active.identity.instanceKey) {
+        return { status: "cancelled", snapshot: this.snapshot() };
+      }
+
+      await this.ensureSafeSwitch();
+      const afterCleanup = this.state.active;
+      if (!this.isCurrent(generation) || !afterCleanup || afterCleanup.identity.instanceKey !== active.identity.instanceKey) {
+        return { status: "cancelled", snapshot: this.snapshot() };
+      }
+      return operationCompleted(this.snapshot());
+    }
     await this.trust.setDecision(active.identity, decision, this.now());
     const current = this.state.active;
     if (!this.isCurrent(generation) || !current || current.identity.instanceKey !== active.identity.instanceKey) {
       return { status: "cancelled", snapshot: this.snapshot() };
     }
-    this.update({ active: { ...current, trust: decision }, problem: null });
+    if (current.trust !== decision) this.update({ active: { ...current, trust: decision }, problem: null });
     return operationCompleted(this.snapshot());
   }
 
@@ -403,6 +425,22 @@ export class ProjectManager {
       this.update({ problem: { code: "not-trusted", message: "Trust this project before preparing its runtime workspace.", recoverable: true } });
       return operationCompleted(this.snapshot());
     }
+    try {
+      await this.ensureSafeSwitch();
+    } catch (cause) {
+      if (this.isCurrent(generation) && this.state.active?.identity.instanceKey === active.identity.instanceKey) {
+        this.update({ problem: {
+          code: "switch-blocked",
+          message: errorMessage(cause),
+          recoverable: true,
+        } });
+      }
+      return operationCompleted(this.snapshot());
+    }
+    const afterCleanup = this.state.active;
+    if (!this.isCurrent(generation) || !afterCleanup || afterCleanup.identity.instanceKey !== active.identity.instanceKey) {
+      return { status: "cancelled", snapshot: this.snapshot() };
+    }
     const transition = this.begin("preparing-workspace");
     try {
       const workspace = await this.workspaceFor(active.identity).stage(active.identity.canonicalPath, {
@@ -432,6 +470,32 @@ export class ProjectManager {
       } });
       return operationCompleted(this.snapshot());
     }
+  }
+
+  async adoptPublishedWorkspace(
+    generation: number,
+    instanceKey: string,
+    workspace: RuntimeWorkspace,
+  ): Promise<void> {
+    const active = this.requireActive(generation);
+    if (active.identity.instanceKey !== instanceKey || active.trust !== "trusted") {
+      throw new Error("The published runtime workspace is not authorized for the active project");
+    }
+    const published = await this.workspaceFor(active.identity).current?.();
+    const current = this.requireActive(generation);
+    if (
+      current.identity.instanceKey !== instanceKey
+      || current.trust !== "trusted"
+      || !published
+      || published.baselineIdentity !== workspace.baselineIdentity
+      || published.runtimeId !== workspace.runtimeId
+    ) {
+      throw new Error("The runtime workspace publication is stale");
+    }
+    this.update({
+      active: { ...current, workspace: publicWorkspace(published, this.now()) },
+      problem: null,
+    });
   }
 
   dispose(): void {

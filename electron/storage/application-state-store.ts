@@ -44,7 +44,7 @@ function decodePersonalState(value: unknown): ProjectPersonalState {
   ) {
     throw new Error("lastRoute must be an application-relative route");
   }
-  const sections = new Set(["overview", "changes", "components", "design-system", "assets", "routes", "servers"]);
+  const sections = new Set(["overview", "changes", "components", "design-system", "assets", "routes", "canvas", "servers"]);
   if (value.selectedSection !== undefined && (typeof value.selectedSection !== "string" || !sections.has(value.selectedSection))) {
     throw new Error("selectedSection must be a known project section");
   }

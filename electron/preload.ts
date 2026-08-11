@@ -16,6 +16,12 @@ import {
   preparedApplyResultSchema,
   type LargerChangesBridge,
 } from "../src/change-ipc.js";
+import {
+  RUNTIME_IPC_CHANNELS,
+  runtimeOperationResultSchema,
+  runtimeWorkspaceSnapshotSchema,
+  type LargerRuntimeBridge,
+} from "../src/runtime-ipc.js";
 
 async function invoke<T>(channel: string, schema: ZodType<T>, input?: unknown): Promise<T> {
   const envelope = await ipcRenderer.invoke(channel, input) as IpcEnvelope<T>;
@@ -108,18 +114,77 @@ const changes: LargerChangesBridge = {
   },
 };
 
-const canvas: LargerCanvasBridge = {
-  load: (generation, url) => ipcRenderer.invoke("canvas:load", { generation, url }),
-  navigate: (generation, url) => ipcRenderer.invoke("canvas:navigate", { generation, url }),
-  setBounds: (generation, bounds) => ipcRenderer.send("canvas:bounds", { generation, bounds }),
-  show: (generation) => ipcRenderer.send("canvas:show", { generation }),
-  hide: () => ipcRenderer.send("canvas:hide"),
-  onNavigation(listener) {
-    const handler = (_event: IpcRendererEvent, navigation: { generation: number; url: string }) => listener(navigation);
-    ipcRenderer.on("canvas:navigated", handler);
-    return () => ipcRenderer.removeListener("canvas:navigated", handler);
+const runtime: LargerRuntimeBridge = {
+  getSnapshot: (generation) => invoke(RUNTIME_IPC_CHANNELS.getSnapshot, runtimeWorkspaceSnapshotSchema, { generation }),
+  start: (generation, profileName, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.start,
+    runtimeOperationResultSchema,
+    { generation, profileName, expectedRevision },
+  ),
+  attach: (generation, url, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.attach,
+    runtimeOperationResultSchema,
+    { generation, url, expectedRevision },
+  ),
+  discover: (generation, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.discover,
+    runtimeOperationResultSchema,
+    { generation, expectedRevision },
+  ),
+  cancel: (generation, operationId) => invoke(
+    RUNTIME_IPC_CHANNELS.cancel,
+    runtimeOperationResultSchema,
+    { generation, operationId },
+  ),
+  stop: (generation, sessionId, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.stop,
+    runtimeOperationResultSchema,
+    { generation, sessionId, expectedRevision },
+  ),
+  detach: (generation, sessionId, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.detach,
+    runtimeOperationResultSchema,
+    { generation, sessionId, expectedRevision },
+  ),
+  restart: (generation, sessionId, expectedRevision) => invoke(
+    RUNTIME_IPC_CHANNELS.restart,
+    runtimeOperationResultSchema,
+    { generation, sessionId, expectedRevision },
+  ),
+  onSnapshot(listener) {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown) => {
+      const parsed = runtimeWorkspaceSnapshotSchema.safeParse(snapshot);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(RUNTIME_IPC_CHANNELS.snapshot, handler);
+    return () => ipcRenderer.removeListener(RUNTIME_IPC_CHANNELS.snapshot, handler);
   },
 };
 
-contextBridge.exposeInMainWorld("larger", { projects, changes });
+const canvas: LargerCanvasBridge = {
+  load: (generation, surfaceId) => ipcRenderer.invoke("canvas:load", { generation, surfaceId }),
+  navigate: (generation, surfaceId, route) => ipcRenderer.invoke("canvas:navigate", { generation, surfaceId, route }),
+  setBounds: (generation, bounds) => ipcRenderer.send("canvas:bounds", { generation, bounds }),
+  show: (generation, surfaceId) => ipcRenderer.send("canvas:show", { generation, surfaceId }),
+  focus: (generation, surfaceId) => ipcRenderer.send("canvas:focus", { generation, surfaceId }),
+  hide: () => ipcRenderer.send("canvas:hide"),
+  onNavigation(listener) {
+    const handler = (
+      _event: IpcRendererEvent,
+      navigation: { generation: number; surfaceId: string; route: string },
+    ) => listener(navigation);
+    ipcRenderer.on("canvas:navigated", handler);
+    return () => ipcRenderer.removeListener("canvas:navigated", handler);
+  },
+  onFocusReturn(listener) {
+    const handler = (
+      _event: IpcRendererEvent,
+      navigation: { generation: number; surfaceId: string },
+    ) => listener(navigation);
+    ipcRenderer.on("canvas:focus-return", handler);
+    return () => ipcRenderer.removeListener("canvas:focus-return", handler);
+  },
+};
+
+contextBridge.exposeInMainWorld("larger", { projects, changes, runtime });
 contextBridge.exposeInMainWorld("largerCanvas", canvas);

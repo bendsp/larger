@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { build } from "esbuild";
 import { _electron as electron } from "playwright-core";
 import { RuntimeWorkspaceProvider } from "../../electron/runtime-workspaces/provider.js";
@@ -80,11 +80,124 @@ async function writeProject(projectPath: string, projectId: string, name: string
   if (!initialized) return;
   await mkdir(path.join(projectPath, ".larger"));
   await writeFile(path.join(projectPath, ".larger", "project.json"), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectId,
     name,
     defaultRuntimeProfile: "dev",
-    runtimeProfiles: { dev: { command: ["pnpm", "dev"], workingDirectory: ".", host: "127.0.0.1", preferredPort: 3000, entryRoute: "/", editorAdapter: "react-rewrite" } },
+    runtimeProfiles: { dev: {
+      command: ["pnpm", "dev"],
+      workingDirectory: ".",
+      dependencyRoot: ".",
+      host: "127.0.0.1",
+      preferredPort: 3000,
+      readiness: { path: "/", timeoutMs: 60_000 },
+      entryRoute: "/",
+      environment: { literals: {}, inherit: ["PATH"], secrets: {} },
+      runtimeAdapter: "command",
+      editorAdapter: "react-rewrite",
+    } },
+  }, null, 2)}\n`);
+}
+
+async function writeRuntimeProject(
+  projectPath: string,
+  projectId: string,
+  name: string,
+  preferredPort: number,
+): Promise<void> {
+  const fixtureRoot = path.resolve("test/fixtures/runtime-framework");
+  const fixturePackage = JSON.parse(
+    await readFile(path.join(fixtureRoot, "package.json"), "utf8"),
+  ) as Record<string, unknown>;
+  await mkdir(path.join(projectPath, ".larger"), { recursive: true });
+  await mkdir(path.join(projectPath, "app"), { recursive: true });
+  await mkdir(path.join(projectPath, "src"), { recursive: true });
+  await writeFile(path.join(projectPath, "package.json"), `${JSON.stringify({
+    ...fixturePackage,
+    name: projectId,
+    scripts: { dev: "vite" },
+  }, null, 2)}\n`);
+  await writeFile(
+    path.join(projectPath, "pnpm-lock.yaml"),
+    await readFile(path.join(fixtureRoot, "pnpm-lock.yaml"), "utf8"),
+  );
+  await writeFile(path.join(projectPath, "index.html"), "<div id=\"root\"></div><script type=\"module\" src=\"/src/main.jsx\"></script>\n");
+  await writeFile(path.join(projectPath, "src", "main.jsx"), [
+    "import React from 'react';",
+    "import { createRoot } from 'react-dom/client';",
+    "import { App } from './App.jsx';",
+    "createRoot(document.getElementById('root')).render(<App />);",
+    "",
+  ].join("\n"));
+  await writeFile(path.join(projectPath, "src", "App.jsx"), [
+    "import React from 'react';",
+    "export function App() {",
+    "  return <main><h1>Managed Vite fixture</h1></main>;",
+    "}",
+    "",
+  ].join("\n"));
+  await writeFile(path.join(projectPath, "draft.txt"), "intentional untracked fixture state\n");
+  await writeFile(path.join(projectPath, "vite.config.js"), [
+    "console.log(`approved:${process.env.LARGER_APPROVED_SECRET}`);",
+    "console.log(`unapproved:${process.env.LARGER_UNAPPROVED_SECRET ?? 'missing'}`);",
+    "export default {};",
+    "",
+  ].join("\n"));
+  await writeFile(path.join(projectPath, "app", "page.js"), [
+    "export default function Page() {",
+    "  return <main><h1>Managed Next fixture</h1></main>;",
+    "}",
+    "",
+  ].join("\n"));
+  await writeFile(path.join(projectPath, "app", "layout.js"), [
+    "export default function RootLayout({ children }) {",
+    "  return <html><body>{children}</body></html>;",
+    "}",
+    "",
+  ].join("\n"));
+  await writeFile(path.join(projectPath, ".larger", "project.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    projectId,
+    name,
+    defaultRuntimeProfile: "vite",
+    runtimeProfiles: {
+      vite: {
+        command: ["pnpm", "exec", "vite", "--host", "{host}", "--port", "{port}", "--strictPort"],
+        workingDirectory: ".",
+        dependencyRoot: ".",
+        host: "127.0.0.1",
+        preferredPort,
+        readiness: { path: "/", timeoutMs: 15_000 },
+        entryRoute: "/",
+        environment: { literals: {}, inherit: ["PATH", "LARGER_APPROVED_SECRET"], secrets: {} },
+        runtimeAdapter: "command",
+        editorAdapter: null,
+      },
+      "react-rewrite": {
+        command: ["pnpm", "exec", "vite", "--host", "{host}", "--port", "{port}", "--strictPort"],
+        workingDirectory: ".",
+        dependencyRoot: ".",
+        host: "127.0.0.1",
+        preferredPort: preferredPort + 10,
+        readiness: { path: "/", timeoutMs: 15_000 },
+        entryRoute: "/",
+        environment: { literals: {}, inherit: ["PATH"], secrets: {} },
+        runtimeAdapter: "command",
+        editorAdapter: "react-rewrite",
+      },
+      next: {
+        command: ["pnpm", "exec", "next", "dev", "--hostname", "{host}", "--port", "{port}"],
+        workingDirectory: ".",
+        dependencyRoot: ".",
+        host: "127.0.0.1",
+        preferredPort: preferredPort + 20,
+        readiness: { path: "/", timeoutMs: 30_000 },
+        entryRoute: "/",
+        environment: { literals: {}, inherit: ["PATH"], secrets: {} },
+        runtimeAdapter: "command",
+        editorAdapter: null,
+      },
+    },
   }, null, 2)}\n`);
 }
 
@@ -118,6 +231,7 @@ async function serveProductionRenderer(t: test.TestContext): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
+describe("production Electron integration", { concurrency: false }, () => {
 test("real Electron exposes the narrow bridge and handles cancelled and selected directories", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-electron-test-"));
   t.after(() => removeTestTree(temporary));
@@ -141,6 +255,7 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   const boundary = await page.evaluate(() => ({
     projects: Object.keys(window.larger?.projects ?? {}).sort(),
     changes: Object.keys(window.larger?.changes ?? {}).sort(),
+    runtime: Object.keys(window.larger?.runtime ?? {}).sort(),
     hasProcess: "process" in window,
     hasRequire: "require" in window,
     hasIpcRenderer: "ipcRenderer" in window,
@@ -154,6 +269,9 @@ test("real Electron exposes the narrow bridge and handles cancelled and selected
   ]);
   assert.deepEqual(boundary.changes, [
     "commitApply", "discard", "getSnapshot", "onSnapshot", "prepareApply", "recover", "scan", "updateSelection",
+  ]);
+  assert.deepEqual(boundary.runtime, [
+    "attach", "cancel", "detach", "discover", "getSnapshot", "onSnapshot", "restart", "start", "stop",
   ]);
   const result = await page.evaluate(async () => {
     const before = await window.larger!.projects.getSnapshot();
@@ -190,6 +308,7 @@ test("production renderer switches through pending setup and restores personal U
       LARGER_ELECTRON_TEST_PROJECTS: JSON.stringify([firstPath, pendingPath]),
       LARGER_ELECTRON_TEST_RENDERER_URL: rendererUrl,
       LARGER_ELECTRON_TEST_CANCEL_FIRST: "false",
+      LARGER_ELECTRON_TEST_SHOW: "true",
     },
   });
 
@@ -316,4 +435,467 @@ test("production renderer reviews one hunk and recovers the prepared plan after 
   assert.equal(appliedSource, expected);
   assert.deepEqual(unrelatedSource, dirtyUnrelated);
   await closeElectronApplication(restoredApplication);
+});
+
+test("production renderer owns managed runtime lifecycle and keeps attached previews external", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("Managed process-tree ownership is intentionally gated to Darwin");
+    return;
+  }
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-runtime-renderer-test-"));
+  const applications: Array<Awaited<ReturnType<typeof electron.launch>>> = [];
+  t.after(async () => {
+    for (const application of applications) await closeElectronApplication(application);
+    await removeTestTree(temporary);
+  });
+  const fixtureMain = await buildFixtureMain(temporary);
+  const rendererUrl = await serveProductionRenderer(t);
+  const userData = path.join(temporary, "user-data");
+  const projectPath = path.join(temporary, "project");
+  const secondProjectPath = path.join(temporary, "second-project");
+
+  const occupiedServer = createServer((_request, response) => response.end("external preview"));
+  await new Promise<void>((resolve, reject) => {
+    occupiedServer.once("error", reject);
+    occupiedServer.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => {
+    occupiedServer.closeAllConnections();
+    return new Promise<void>((resolve) => occupiedServer.close(() => resolve()));
+  });
+  const occupiedAddress = occupiedServer.address();
+  assert.ok(occupiedAddress && typeof occupiedAddress !== "string");
+  const preferredPort = occupiedAddress.port;
+  await writeRuntimeProject(projectPath, "renderer-runtime", "Renderer runtime", preferredPort);
+  await writeProject(secondProjectPath, "renderer-runtime-second", "Second runtime project");
+
+  const require = createRequire(import.meta.url);
+  const executablePath = require("electron") as string;
+  const reactRewriteCliPath = path.join(
+    path.dirname(require.resolve("react-rewrite-cli/package.json")),
+    "bin",
+    "react-rewrite.js",
+  );
+  const launch = () => electron.launch({
+    executablePath,
+    args: [fixtureMain],
+    env: {
+      ...process.env,
+      LARGER_ELECTRON_TEST_USER_DATA: userData,
+      LARGER_ELECTRON_TEST_PRELOAD: path.resolve(".larger/electron/preload.cjs"),
+      LARGER_ELECTRON_TEST_PROJECTS: JSON.stringify([projectPath, secondProjectPath, projectPath]),
+      LARGER_ELECTRON_TEST_RENDERER_URL: rendererUrl,
+      LARGER_ELECTRON_TEST_CANCEL_FIRST: "false",
+      LARGER_APPROVED_SECRET: "approved-production-secret",
+      LARGER_UNAPPROVED_SECRET: "must-not-reach-child",
+      LARGER_ELECTRON_TEST_SHOW: "true",
+      LARGER_ELECTRON_TEST_REACT_REWRITE_CLI: reactRewriteCliPath,
+    },
+  });
+
+  const firstApplication = await launch();
+  applications.push(firstApplication);
+  const firstPage = await firstApplication.firstWindow();
+  await firstPage.getByRole("heading", { name: "Larger" }).waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Open project" }).click();
+  await firstPage.getByText("Renderer runtime").first().waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Review trust" }).click();
+  await firstPage.getByRole("button", { name: "Trust project" }).click();
+  await firstPage.getByRole("button", { name: "Servers", exact: true }).click();
+  await firstPage.getByRole("heading", { name: "Runtime workspace" }).waitFor({ timeout: 5_000 });
+  await firstPage.getByRole("button", { name: "Start", exact: true }).click();
+  await firstPage.getByRole("button", { name: "Cancel", exact: true }).waitFor({ timeout: 10_000 });
+  await firstPage.getByRole("button", { name: "Cancel", exact: true }).click();
+  await firstPage.getByRole("button", { name: "Start", exact: true }).waitFor({ timeout: 15_000 });
+  await firstPage.getByRole("button", { name: "Start", exact: true }).click();
+  try {
+    await firstPage.getByText("Managed server ready", { exact: true }).first().waitFor({ timeout: 120_000 });
+  } catch (cause) {
+    const diagnostic = await firstPage.evaluate(async () => {
+      const project = await window.larger!.projects.getSnapshot();
+      return project.active
+        ? window.larger!.runtime.getSnapshot(project.active.generation)
+        : { project };
+    });
+    throw new Error(`Managed Vite fixture did not become ready: ${JSON.stringify(diagnostic)}`, { cause });
+  }
+  await firstPage.getByText("Preferred port was occupied", { exact: true }).waitFor({ timeout: 5_000 });
+
+  const firstSnapshot = await firstPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    assertProject(project.active);
+    return window.larger!.runtime.getSnapshot(project.active.generation);
+
+    function assertProject(active: typeof project.active): asserts active is NonNullable<typeof active> {
+      if (!active) throw new Error("Expected an active project");
+    }
+  });
+  assert.equal(firstSnapshot.session?.mode, "managed");
+  assert.notEqual(firstSnapshot.session?.endpoint.portAllocation?.actual, preferredPort);
+  const firstLogs = firstSnapshot.logWindow.entries.map((entry) => entry.message).join("\n");
+  assert.match(firstLogs, /approved:\[REDACTED\]/);
+  assert.match(firstLogs, /unapproved:missing/);
+  assert.doesNotMatch(firstLogs, /approved-production-secret|must-not-reach-child/);
+  await firstPage.getByRole("button", { name: "Copy logs", exact: true }).click();
+  await firstPage.getByRole("button", { name: "Copied", exact: true }).waitFor({ timeout: 5_000 });
+  const copiedLogs = await firstApplication.evaluate(({ clipboard }) => clipboard.readText());
+  assert.match(copiedLogs, /approved:\[REDACTED\]/);
+  assert.doesNotMatch(copiedLogs, /approved-production-secret|must-not-reach-child/);
+  assert.equal((await fetch(firstSnapshot.session!.endpoint.displayUrl)).status, 200);
+  assert.equal(
+    await (await fetch(new URL("/draft.txt", firstSnapshot.session!.endpoint.displayUrl))).text(),
+    "intentional untracked fixture state\n",
+  );
+  assert.equal(await readFile(path.join(projectPath, "draft.txt"), "utf8"), "intentional untracked fixture state\n");
+  const screenshotPath = process.env.LARGER_RUNTIME_E2E_SCREENSHOT;
+  if (screenshotPath) await firstPage.screenshot({ path: screenshotPath, fullPage: true });
+
+  await firstPage.getByRole("button", { name: "Open canvas", exact: true }).click();
+  await firstPage.getByLabel("Canvas route").waitFor({ timeout: 5_000 });
+  const canvasDeadline = Date.now() + 10_000;
+  let canvasState: { url: string; heading: string | null } | null = null;
+  while (Date.now() < canvasDeadline && canvasState?.heading !== "Managed Vite fixture") {
+    canvasState = await firstApplication.evaluate(async ({ BrowserWindow, webContents }, expectedUrl) => {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (!mainWindow) return null;
+      const canvas = webContents.getAllWebContents().find((contents) => (
+        contents.id !== mainWindow.webContents.id && contents.getURL() === expectedUrl
+      ));
+      if (!canvas) return null;
+      return {
+        url: canvas.getURL(),
+        heading: await canvas.executeJavaScript('document.querySelector("h1")?.textContent ?? null'),
+      };
+    }, firstSnapshot.session!.endpoint.displayUrl);
+    if (canvasState?.heading !== "Managed Vite fixture") {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  assert.equal(canvasState?.url, firstSnapshot.session!.endpoint.displayUrl);
+  assert.equal(canvasState?.heading, "Managed Vite fixture");
+  await firstPage.getByRole("button", { name: "Focus preview", exact: true }).click();
+  const focusDeadline = Date.now() + 5_000;
+  let canvasFocused = false;
+  while (!canvasFocused && Date.now() < focusDeadline) {
+    canvasFocused = await firstApplication.evaluate(async ({ BrowserWindow, webContents }, expectedUrl) => {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (!mainWindow) return false;
+      const canvas = webContents.getAllWebContents().find((contents) => (
+        contents.id !== mainWindow.webContents.id && contents.getURL() === expectedUrl
+      ));
+      return canvas ? await canvas.executeJavaScript("document.hasFocus()") as boolean : false;
+    }, firstSnapshot.session!.endpoint.displayUrl);
+    if (!canvasFocused) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(canvasFocused, true);
+  await firstApplication.evaluate(({ BrowserWindow, webContents }, expectedUrl) => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (!mainWindow) throw new Error("Expected an Electron window");
+    const canvas = webContents.getAllWebContents().find((contents) => (
+      contents.id !== mainWindow.webContents.id && contents.getURL() === expectedUrl
+    ));
+    if (!canvas) throw new Error("Expected a canvas webContents");
+    canvas.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+  }, firstSnapshot.session!.endpoint.displayUrl);
+  await firstPage.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Canvas route");
+
+  await firstApplication.evaluate(async ({ BrowserWindow, webContents }, expectedUrl) => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    const canvas = webContents.getAllWebContents().find((contents) => (
+      contents.id !== mainWindow?.webContents.id && contents.getURL() === expectedUrl
+    ));
+    if (!canvas) throw new Error("Expected a canvas webContents");
+    await canvas.executeJavaScript("document.body.dataset.largerState = 'preserved'");
+  }, firstSnapshot.session!.endpoint.displayUrl);
+
+  await firstPage.getByRole("button", { name: "Project settings" }).click();
+  await firstPage.getByRole("heading", { name: "Project settings" }).waitFor({ timeout: 5_000 });
+  assert.equal(await firstApplication.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    return window?.contentView.children.length ?? -1;
+  }), 0);
+  await firstPage.getByRole("button", { name: "Cancel", exact: true }).click();
+  await firstPage.getByRole("heading", { name: "Project settings" }).waitFor({ state: "detached" });
+  await firstPage.waitForFunction(() => document.querySelector('[aria-label="Canvas route"]') !== null);
+  assert.equal(await firstApplication.evaluate(async ({ BrowserWindow, webContents }, expectedUrl) => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    const canvas = webContents.getAllWebContents().find((contents) => (
+      contents.id !== mainWindow?.webContents.id && contents.getURL() === expectedUrl
+    ));
+    return canvas ? await canvas.executeJavaScript("document.body.dataset.largerState") : null;
+  }, firstSnapshot.session!.endpoint.displayUrl), "preserved");
+  await firstApplication.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.setSize(700, 700);
+  });
+  await firstPage.getByRole("button", { name: "Toggle Sidebar" }).click();
+  await firstPage.waitForFunction(() => document.querySelector('[data-mobile="true"]') !== null);
+  assert.equal(await firstApplication.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? -1
+  )), 0);
+  await firstPage.keyboard.press("Escape");
+  await firstApplication.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.setSize(1280, 800);
+  });
+  const canvasScreenshotPath = process.env.LARGER_CANVAS_E2E_SCREENSHOT;
+  if (canvasScreenshotPath) {
+    const png = await firstApplication.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (!window) throw new Error("Expected an Electron window");
+      return (await window.capturePage()).toPNG().toString("base64");
+    });
+    await writeFile(canvasScreenshotPath, Buffer.from(png, "base64"));
+  }
+  await firstPage.getByRole("button", { name: "Servers", exact: true }).click();
+  await firstPage.getByRole("heading", { name: "Runtime workspace" }).waitFor({ timeout: 5_000 });
+
+  await firstPage.getByRole("button", { name: "Restart", exact: true }).click();
+  const restartDeadline = Date.now() + 15_000;
+  let restartedSnapshot = await firstPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    return window.larger!.runtime.getSnapshot(project.active.generation);
+  });
+  while (
+    Date.now() < restartDeadline
+    && !(
+      restartedSnapshot.phase === "ready-managed"
+      && restartedSnapshot.session?.mode === "managed"
+      && restartedSnapshot.session.id !== firstSnapshot.session!.id
+    )
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    restartedSnapshot = await firstPage.evaluate(async () => {
+      const project = await window.larger!.projects.getSnapshot();
+      if (!project.active) throw new Error("Expected an active project");
+      return window.larger!.runtime.getSnapshot(project.active.generation);
+    });
+  }
+  assert.equal(restartedSnapshot.session?.mode, "managed");
+  assert.notEqual(restartedSnapshot.session?.id, firstSnapshot.session?.id);
+  assert.equal(restartedSnapshot.session?.baselineIdentity, firstSnapshot.session?.baselineIdentity);
+  await firstPage.getByRole("button", { name: "Stop", exact: true }).click();
+  await firstPage.getByRole("button", { name: "Start", exact: true }).waitFor({ timeout: 10_000 });
+  const nextResult = await firstPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    const runtime = await window.larger!.runtime.getSnapshot(project.active.generation);
+    return window.larger!.runtime.start(project.active.generation, "next", runtime.revision);
+  });
+  assert.equal(
+    nextResult.snapshot.phase,
+    "ready-managed",
+    JSON.stringify({ problem: nextResult.snapshot.problem, logs: nextResult.snapshot.logWindow }, null, 2),
+  );
+  assert.equal(nextResult.snapshot.session?.profileName, "next");
+  assert.match(
+    await (await fetch(nextResult.snapshot.session!.endpoint.displayUrl)).text(),
+    /Managed Next fixture/,
+  );
+  await firstPage.evaluate(async (sessionId) => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    const runtime = await window.larger!.runtime.getSnapshot(project.active.generation);
+    await window.larger!.runtime.stop(project.active.generation, sessionId, runtime.revision);
+  }, nextResult.snapshot.session!.id);
+  const rewriteResult = await firstPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    const runtime = await window.larger!.runtime.getSnapshot(project.active.generation);
+    return window.larger!.runtime.start(project.active.generation, "react-rewrite", runtime.revision);
+  });
+  assert.equal(
+    rewriteResult.snapshot.phase,
+    "ready-managed",
+    JSON.stringify({ problem: rewriteResult.snapshot.problem, logs: rewriteResult.snapshot.logWindow }, null, 2),
+  );
+  assert.equal(rewriteResult.snapshot.session?.surface.editorAdapter, "react-rewrite");
+  assert.equal(rewriteResult.snapshot.session?.surface.writable, true);
+  await firstPage.getByRole("button", { name: "Canvas", exact: true }).click();
+  await firstPage.getByLabel("Canvas route").waitFor({ timeout: 10_000 });
+
+  const rewriteCanvasDeadline = Date.now() + 15_000;
+  let rewriteCanvasId: number | null = null;
+  while (rewriteCanvasId === null && Date.now() < rewriteCanvasDeadline) {
+    rewriteCanvasId = await firstApplication.evaluate(async ({ BrowserWindow, webContents }) => {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      for (const contents of webContents.getAllWebContents()) {
+        if (contents.id === mainWindow?.webContents.id || contents.isDestroyed()) continue;
+        try {
+          if (await contents.executeJavaScript('document.querySelector("h1")?.textContent === "Managed Vite fixture"')) {
+            return contents.id;
+          }
+        } catch {
+          // A renderer may disappear while the native Canvas is switching surfaces.
+        }
+      }
+      return null;
+    });
+    if (rewriteCanvasId === null) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(rewriteCanvasId !== null, "React Rewrite Canvas did not render the managed React fixture");
+  await firstApplication.evaluate(async ({ webContents }, canvasId) => {
+    const canvas = webContents.fromId(canvasId);
+    if (!canvas) throw new Error("Expected a React Rewrite canvas webContents");
+    await canvas.executeJavaScript(`(async () => {
+      const heading = document.querySelector('h1');
+      if (!heading) throw new Error('Missing editable heading');
+      const rect = heading.getBoundingClientRect();
+      const pointer = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        button: 0,
+      };
+      heading.dispatchEvent(new MouseEvent('mousedown', pointer));
+      heading.dispatchEvent(new MouseEvent('mouseup', pointer));
+      const sourceDeadline = Date.now() + 5_000;
+      let sourcePath = '';
+      while (!sourcePath.includes('src/App.jsx') && Date.now() < sourceDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        sourcePath = document.querySelector('#react-rewrite-root')?.shadowRoot
+          ?.querySelector('.component-detail .path')?.textContent ?? '';
+      }
+      if (!sourcePath.includes('src/App.jsx')) {
+        throw new Error('React Rewrite did not resolve the selected heading to src/App.jsx');
+      }
+      heading.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (heading.getAttribute('contenteditable') !== 'true') throw new Error('React Rewrite did not enter text editing mode');
+      heading.focus();
+      heading.textContent = 'Edited through Larger';
+      heading.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: null }));
+      heading.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      heading.blur();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const confirm = document.querySelector('#react-rewrite-root')?.shadowRoot?.querySelector('.generate-btn');
+      if (!(confirm instanceof HTMLButtonElement) || confirm.disabled) {
+        throw new Error('React Rewrite did not make the visual edit confirmable');
+      }
+      confirm.click();
+    })()`);
+  }, rewriteCanvasId);
+
+  const reviewDeadline = Date.now() + 15_000;
+  let detectedChange: Awaited<ReturnType<NonNullable<typeof window.larger>["changes"]["scan"]>> | null = null;
+  while (Date.now() < reviewDeadline) {
+    try {
+      detectedChange = await firstPage.evaluate(async () => {
+        const project = await window.larger!.projects.getSnapshot();
+        if (!project.active) throw new Error("Expected an active project");
+        return window.larger!.changes.scan(project.active.generation);
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Runtime tree changed during scan")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
+    }
+    if (detectedChange.snapshot.changeSet?.files.some((file) => file.path === "src/App.jsx")) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const rewriteChangeSet = detectedChange?.snapshot.changeSet;
+  assert.ok(rewriteChangeSet, "React Rewrite edit did not produce a ChangeSet");
+  const rewriteFile = rewriteChangeSet.files.find((file) => file.path === "src/App.jsx");
+  assert.ok(rewriteFile && rewriteFile.kind === "text", "React Rewrite edit was not captured as text");
+  assert.equal(await readFile(path.join(projectPath, "src", "App.jsx"), "utf8"), [
+    "import React from 'react';",
+    "export function App() {",
+    "  return <main><h1>Managed Vite fixture</h1></main>;",
+    "}",
+    "",
+  ].join("\n"));
+  const selectedChange = await firstPage.evaluate(async ({ changeSetId, revision, fileId, hunkIds }) => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    return window.larger!.changes.updateSelection(project.active.generation, changeSetId, revision, {
+      files: [{ fileId, includeFile: true, hunkIds }],
+    });
+  }, {
+    changeSetId: rewriteChangeSet.id,
+    revision: rewriteChangeSet.revision,
+    fileId: rewriteFile.id,
+    hunkIds: rewriteFile.hunks.map((hunk) => hunk.id),
+  });
+  const selectedSnapshot = selectedChange.snapshot.changeSet;
+  assert.ok(selectedSnapshot);
+  const preparedChange = await firstPage.evaluate(async ({ changeSetId, revision }) => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    return window.larger!.changes.prepareApply(project.active.generation, changeSetId, revision);
+  }, { changeSetId: selectedSnapshot.id, revision: selectedSnapshot.revision });
+  assert.equal(preparedChange.status, "prepared");
+  assert.ok(preparedChange.transactionId && preparedChange.planDigest);
+  await firstPage.evaluate(async ({ transactionId, planDigest }) => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    return window.larger!.changes.commitApply(project.active.generation, transactionId, planDigest);
+  }, { transactionId: preparedChange.transactionId, planDigest: preparedChange.planDigest });
+  assert.match(await readFile(path.join(projectPath, "src", "App.jsx"), "utf8"), /Edited through Larger/);
+  await firstPage.evaluate(async (sessionId) => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    const runtime = await window.larger!.runtime.getSnapshot(project.active.generation);
+    await window.larger!.runtime.stop(project.active.generation, sessionId, runtime.revision);
+  }, rewriteResult.snapshot.session!.id);
+  const switchRuntime = await firstPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    const runtime = await window.larger!.runtime.getSnapshot(project.active.generation);
+    return window.larger!.runtime.start(project.active.generation, "vite", runtime.revision);
+  });
+  assert.equal(switchRuntime.snapshot.phase, "ready-managed");
+  const switchedEndpoint = switchRuntime.snapshot.session!.endpoint.displayUrl;
+  const switchedProject = await firstPage.evaluate(() => window.larger!.projects.pickAndOpen());
+  assert.equal(switchedProject.snapshot.active?.identity.projectId, "renderer-runtime-second");
+  await assert.rejects(() => fetch(switchedEndpoint));
+  const restoredProject = await firstPage.evaluate(() => window.larger!.projects.pickAndOpen());
+  assert.equal(restoredProject.snapshot.active?.identity.projectId, "renderer-runtime");
+  await closeElectronApplication(firstApplication);
+
+  const restoredApplication = await launch();
+  applications.push(restoredApplication);
+  const restoredPage = await restoredApplication.firstWindow();
+  await restoredPage.getByText("Renderer runtime").first().waitFor({ timeout: 10_000 });
+  await restoredPage.getByRole("button", { name: "Servers", exact: true }).click();
+  await restoredPage.getByRole("button", { name: "Start", exact: true }).click();
+  await restoredPage.getByText("Managed server ready", { exact: true }).first().waitFor({ timeout: 15_000 });
+  const restoredSnapshot = await restoredPage.evaluate(async () => {
+    const project = await window.larger!.projects.getSnapshot();
+    if (!project.active) throw new Error("Expected an active project");
+    return window.larger!.runtime.getSnapshot(project.active.generation);
+  });
+  assert.equal(restoredSnapshot.session?.mode, "managed");
+  assert.equal(restoredSnapshot.session?.baselineIdentity, firstSnapshot.session?.baselineIdentity);
+  assert.equal(restoredSnapshot.session?.runtimeId, firstSnapshot.session?.runtimeId);
+  const crashedEndpoint = restoredSnapshot.session!.endpoint.displayUrl;
+  const crashedApplicationClosed = restoredApplication.waitForEvent("close");
+  restoredApplication.process().kill("SIGKILL");
+  await crashedApplicationClosed;
+  const cleanupDeadline = Date.now() + 10_000;
+  let targetStopped = false;
+  while (Date.now() < cleanupDeadline && !targetStopped) {
+    try {
+      await fetch(crashedEndpoint);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      targetStopped = true;
+    }
+  }
+  assert.equal(targetStopped, true, "Managed target survived an abrupt Larger process exit");
+
+  const recoveredApplication = await launch();
+  applications.push(recoveredApplication);
+  const recoveredPage = await recoveredApplication.firstWindow();
+  await recoveredPage.getByText("Renderer runtime").first().waitFor({ timeout: 10_000 });
+  await recoveredPage.getByRole("button", { name: "Servers", exact: true }).click();
+  await recoveredPage.getByRole("button", { name: "Start", exact: true }).waitFor({ timeout: 10_000 });
+  await recoveredPage.getByRole("tab", { name: "Attach preview" }).click();
+  await recoveredPage.getByLabel("Local server URL").fill(`http://127.0.0.1:${preferredPort}`);
+  await recoveredPage.getByRole("button", { name: "Attach", exact: true }).click();
+  await recoveredPage.getByText("External process — never stopped by Larger", { exact: true }).waitFor({ timeout: 10_000 });
+  await recoveredPage.getByRole("button", { name: "Detach", exact: true }).click();
+  assert.equal((await fetch(`http://127.0.0.1:${preferredPort}`)).status, 200);
+  await closeElectronApplication(recoveredApplication);
+});
 });

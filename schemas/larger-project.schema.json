@@ -8,7 +8,7 @@
   "required": ["schemaVersion", "projectId", "name", "defaultRuntimeProfile", "runtimeProfiles"],
   "properties": {
     "$schema": { "type": "string" },
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "projectId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$",
@@ -44,10 +44,44 @@
       },
       "description": "One argv entry. Credentials belong in the launch environment, never in the project manifest."
     },
+    "environmentName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["literals", "inherit", "secrets"],
+      "properties": {
+        "literals": {
+          "type": "object",
+          "propertyNames": {
+            "allOf": [
+              { "$ref": "#/$defs/environmentName" },
+              { "not": { "pattern": "(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)" } }
+            ]
+          },
+          "additionalProperties": { "type": "string" }
+        },
+        "inherit": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/environmentName" }
+        },
+        "secrets": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/environmentName" },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+          }
+        }
+      }
+    },
     "runtimeProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command", "workingDirectory", "host", "preferredPort", "entryRoute", "editorAdapter"],
+      "required": ["command", "workingDirectory", "dependencyRoot", "host", "preferredPort", "readiness", "entryRoute", "environment", "runtimeAdapter", "editorAdapter"],
       "properties": {
         "command": {
           "type": "array",
@@ -55,10 +89,27 @@
           "items": { "$ref": "#/$defs/commandArgument" }
         },
         "workingDirectory": { "$ref": "#/$defs/relativeProjectPath" },
-        "host": { "enum": ["127.0.0.1", "localhost"] },
+        "dependencyRoot": { "$ref": "#/$defs/relativeProjectPath" },
+        "host": { "const": "127.0.0.1" },
         "preferredPort": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "timeoutMs"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^/(?!/)" },
+            "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000 }
+          }
+        },
         "entryRoute": { "type": "string", "pattern": "^/(?!/)" },
-        "editorAdapter": { "type": "string", "minLength": 1 }
+        "environment": { "$ref": "#/$defs/environment" },
+        "runtimeAdapter": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        "editorAdapter": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+            { "type": "null" }
+          ]
+        }
       }
     }
   }

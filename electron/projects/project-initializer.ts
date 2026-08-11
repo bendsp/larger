@@ -36,6 +36,15 @@ export function suggestProjectManifest(
   const command = packageManager === "npm"
     ? ["npm", "run", scriptName]
     : [packageManager, scriptName];
+  const framework = detectedValue(detection.framework, null);
+  const runtimeAdapter = framework === "nextjs"
+    ? "next"
+    : framework === "vite"
+      ? "vite"
+      : framework === "cra"
+        ? "react-scripts"
+        : "auto";
+  const entryRoute = detectedValue(detection.entryRoute, "/");
   return {
     $schema: PROJECT_MANIFEST_SCHEMA_URL,
     schemaVersion: PROJECT_MANIFEST_VERSION,
@@ -46,9 +55,13 @@ export function suggestProjectManifest(
       dev: {
         command,
         workingDirectory: ".",
+        dependencyRoot: ".",
         host: "127.0.0.1",
         preferredPort: detectedValue(detection.preferredPort, 3000),
-        entryRoute: detectedValue(detection.entryRoute, "/"),
+        readiness: { path: entryRoute, timeoutMs: 60_000 },
+        entryRoute,
+        environment: { literals: {}, inherit: [], secrets: {} },
+        runtimeAdapter,
         editorAdapter: "react-rewrite",
       },
     },

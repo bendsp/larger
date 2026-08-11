@@ -14,7 +14,7 @@ import { detectProject } from "./project-detector.js";
 
 function manifest(projectId: string, name: string): ProjectManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectId,
     name,
     defaultRuntimeProfile: "dev",
@@ -22,9 +22,13 @@ function manifest(projectId: string, name: string): ProjectManifest {
       dev: {
         command: ["pnpm", "dev"],
         workingDirectory: ".",
+        dependencyRoot: ".",
         host: "127.0.0.1",
         preferredPort: 3000,
+        readiness: { path: "/", timeoutMs: 60_000 },
         entryRoute: "/",
+        environment: { literals: {}, inherit: [], secrets: {} },
+        runtimeAdapter: "vite",
         editorAdapter: "react-rewrite",
       },
     },
@@ -76,6 +80,16 @@ class DeferredApplicationStateStore extends ApplicationStateStore {
   override async setPersonalState(...args: Parameters<ApplicationStateStore["setPersonalState"]>) {
     await this.gate.promise;
     return super.setPersonalState(...args);
+  }
+}
+
+class RevocationTrustStore extends ProjectTrustStore {
+  readonly gate = deferred();
+  block = false;
+
+  override async setDecision(...args: Parameters<ProjectTrustStore["setDecision"]>) {
+    if (this.block) await this.gate.promise;
+    return super.setDecision(...args);
   }
 }
 
@@ -250,6 +264,82 @@ test("a failed session stop blocks switching and preserves the active project", 
   assert.match(manager.snapshot().problem?.message ?? "", /refused to stop/);
 });
 
+test("revoking trust durably denies the project and stops active project activity", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-trust-revoke-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const source = await fixture(path.join(temporary, "sources"), "project", "trust-project");
+  let activeSession = false;
+  let stopCalls = 0;
+  const manager = managerFor(path.join(temporary, "state"), {
+    switchGuard: {
+      hasActiveSession: () => activeSession,
+      stopForProjectSwitch: async () => {
+        stopCalls += 1;
+        activeSession = false;
+      },
+    },
+  });
+  await manager.bootstrap();
+  await manager.openPath(source);
+  const opened = manager.snapshot().active!;
+  await manager.setTrust(opened.generation, "trusted");
+  activeSession = true;
+
+  const denied = await manager.setTrust(opened.generation, "denied");
+
+  assert.equal(denied.snapshot.active?.trust, "denied");
+  assert.equal(activeSession, false);
+  assert.equal(stopCalls, 1);
+});
+
+test("a cleanup failure cannot roll back a durable trust revocation after restart", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-trust-cleanup-failure-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const statePath = path.join(temporary, "state");
+  const source = await fixture(path.join(temporary, "sources"), "project", "trust-cleanup-failure-project");
+  let activeSession = false;
+  const manager = managerFor(statePath, {
+    switchGuard: {
+      hasActiveSession: () => activeSession,
+      stopForProjectSwitch: async () => { throw new Error("Session refused to stop"); },
+    },
+  });
+  await manager.bootstrap();
+  await manager.openPath(source);
+  const opened = manager.snapshot().active!;
+  await manager.setTrust(opened.generation, "trusted");
+  activeSession = true;
+
+  await assert.rejects(manager.setTrust(opened.generation, "denied"), /Session refused to stop/);
+  assert.equal(manager.snapshot().active?.trust, "denied");
+
+  const reopened = managerFor(statePath);
+  await reopened.bootstrap();
+  await reopened.openPath(source);
+  assert.equal(reopened.snapshot().active?.trust, "denied");
+});
+
+test("revoking trust publishes an in-memory denial before asynchronous persistence", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-trust-race-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const statePath = path.join(temporary, "state");
+  const source = await fixture(path.join(temporary, "sources"), "project", "trust-race-project");
+  const trust = new RevocationTrustStore(path.join(statePath, "trust.json"));
+  const manager = managerFor(statePath, { trust });
+  await manager.bootstrap();
+  await manager.openPath(source);
+  const opened = manager.snapshot().active!;
+  await manager.setTrust(opened.generation, "trusted");
+  trust.block = true;
+
+  const revocation = manager.setTrust(opened.generation, "denied");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(manager.snapshot().active?.trust, "denied");
+  trust.gate.release();
+  assert.equal((await revocation).snapshot.active?.trust, "denied");
+});
+
 test("late trust and personal-state writes cannot reinsert a switched-away project", async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-late-write-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -285,10 +375,26 @@ test("workspace preparation is trust-gated and publishes only public baseline me
     manifest: { formatVersion: 1, identity: "a".repeat(64), entries: [] },
   };
   let workspaceFactories = 0;
+  let stageCalls = 0;
+  let activeSession = false;
+  let stopCalls = 0;
+  let refuseStop = false;
   const manager = managerFor(path.join(temporary, "state"), {
     createWorkspace: () => {
       workspaceFactories += 1;
-      return { stage: async () => staged };
+      return { stage: async () => {
+        stageCalls += 1;
+        assert.equal(activeSession, false);
+        return staged;
+      } };
+    },
+    switchGuard: {
+      hasActiveSession: () => activeSession,
+      stopForProjectSwitch: async () => {
+        stopCalls += 1;
+        if (refuseStop) throw new Error("Source apply is still active");
+        activeSession = false;
+      },
     },
     now: () => new Date("2026-08-10T12:00:00.000Z"),
   });
@@ -299,6 +405,13 @@ test("workspace preparation is trust-gated and publishes only public baseline me
   assert.equal(manager.snapshot().active?.workspace, null);
   assert.equal(manager.snapshot().problem?.code, "not-trusted");
   await manager.setTrust(initial.generation, "trusted");
+  activeSession = true;
+  refuseStop = true;
+  await manager.prepareWorkspace(initial.generation);
+  assert.equal(manager.snapshot().problem?.code, "switch-blocked");
+  assert.equal(manager.snapshot().active?.workspace, null);
+  assert.equal(stageCalls, 0);
+  refuseStop = false;
   await manager.prepareWorkspace(initial.generation);
   assert.deepEqual(manager.snapshot().active?.workspace, {
     baselineIdentity: staged.baselineIdentity,
@@ -306,9 +419,53 @@ test("workspace preparation is trust-gated and publishes only public baseline me
     preparedAt: "2026-08-10T12:00:00.000Z",
   });
   assert.equal(JSON.stringify(manager.snapshot()).includes("/private/runtime"), false);
+  assert.equal(stopCalls, 2);
+  assert.equal(stageCalls, 1);
   const prepared = manager.snapshot().active!;
   await manager.prepareWorkspace(prepared.generation);
   assert.equal(workspaceFactories, 1);
+});
+
+test("adopts only the registry's current workspace for the active trusted project", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "larger-manager-adopt-workspace-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const source = await fixture(path.join(temporary, "sources"), "project", "adopt-workspace-project");
+  const published: RuntimeWorkspace = {
+    baselineIdentity: "b".repeat(64),
+    baselinePath: "/private/baseline",
+    runtimeId: "00000000-0000-4000-8000-000000000001",
+    runtimePath: "/private/runtime",
+    manifest: { formatVersion: 1, identity: "b".repeat(64), entries: [] },
+  };
+  const manager = managerFor(path.join(temporary, "state"), {
+    createWorkspace: () => ({
+      stage: async () => published,
+      current: async () => published,
+    }),
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+  });
+  await manager.bootstrap();
+  await manager.openPath(source);
+  const opened = manager.snapshot().active!;
+  await manager.setTrust(opened.generation, "trusted");
+  const active = manager.snapshot().active!;
+  await manager.adoptPublishedWorkspace(active.generation, active.identity.instanceKey, published);
+  assert.deepEqual(manager.snapshot().active?.workspace, {
+    baselineIdentity: published.baselineIdentity,
+    runtimeId: published.runtimeId,
+    preparedAt: "2026-08-11T12:00:00.000Z",
+  });
+  await assert.rejects(
+    manager.adoptPublishedWorkspace(active.generation, "other-instance", published),
+    /not authorized/,
+  );
+  await assert.rejects(
+    manager.adoptPublishedWorkspace(active.generation, active.identity.instanceKey, {
+      ...published,
+      runtimeId: "00000000-0000-4000-8000-000000000002",
+    }),
+    /publication is stale/,
+  );
 });
 
 test("project settings preserve stable identity and reopen through the safe manifest path", async (t) => {

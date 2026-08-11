@@ -58,7 +58,7 @@ async function createFixture(
   const active: ActiveProject = {
     generation: 7,
     manifest: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       projectId: "project-change-service",
       name: "Change service test",
       defaultRuntimeProfile: "web",
@@ -66,9 +66,13 @@ async function createFixture(
         web: {
           command: ["pnpm", "dev"],
           workingDirectory: ".",
+          dependencyRoot: ".",
           host: "127.0.0.1",
           preferredPort: 4310,
+          readiness: { path: "/", timeoutMs: 60_000 },
           entryRoute: "/",
+          environment: { literals: {}, inherit: [], secrets: {} },
+          runtimeAdapter: "vite",
           editorAdapter: "react-rewrite",
         },
       },

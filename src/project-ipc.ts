@@ -101,7 +101,7 @@ export const personalStateInputSchema = z.object({
     lastRoute: z.string().startsWith("/").max(2048).refine((route) => !route.startsWith("//"), {
       message: "route must not be scheme-relative",
     }).optional(),
-    selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "servers"]).optional(),
+    selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "canvas", "servers"]).optional(),
   }).strict(),
 }).strict();
 
@@ -141,14 +141,22 @@ const detectionSchema = <T extends z.ZodType>(value: T) => z.discriminatedUnion(
 const runtimeProfileSchema = z.object({
   command: stringArray,
   workingDirectory: z.string(),
-  host: z.enum(["127.0.0.1", "localhost"]),
+  dependencyRoot: z.string(),
+  host: z.literal("127.0.0.1"),
   preferredPort: z.number().int(),
+  readiness: z.object({ path: z.string(), timeoutMs: z.number().int() }).strict(),
   entryRoute: z.string(),
-  editorAdapter: z.string(),
+  environment: z.object({
+    literals: z.record(z.string(), z.string()),
+    inherit: stringArray,
+    secrets: z.record(z.string(), z.string()),
+  }).strict(),
+  runtimeAdapter: z.string(),
+  editorAdapter: z.string().nullable(),
 }).strict();
 const manifestSchema = z.object({
   $schema: z.string().optional(),
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   projectId: z.string(),
   name: z.string(),
   defaultRuntimeProfile: z.string(),
@@ -158,7 +166,7 @@ const identitySchema = z.object({ projectId: z.string(), instanceKey: z.string()
 const personalStateSchema = z.object({
   selectedRuntimeProfile: z.string().optional(),
   lastRoute: z.string().startsWith("/").refine((route) => !route.startsWith("//")).optional(),
-  selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "servers"]).optional(),
+  selectedSection: z.enum(["overview", "changes", "components", "design-system", "assets", "routes", "canvas", "servers"]).optional(),
 }).strict();
 const projectDetectionSchema = z.object({
   canonicalPath: z.string(),

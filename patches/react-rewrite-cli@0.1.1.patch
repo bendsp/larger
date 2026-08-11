@@ -1,0 +1,349 @@
+diff --git a/dist/batch-transform.js b/dist/batch-transform.js
+index 2840f51a39edf250bd08636b0488a08e099b76c6..8bb8968d8d1f9dc14b7b7a756eaf8b2c1d542cc7 100644
+--- a/dist/batch-transform.js
++++ b/dist/batch-transform.js
+@@ -3,7 +3,7 @@
+ // the original AST, applies all mutations atomically (parse once, write once).
+ import * as fs from "node:fs";
+ import { parseSource, findJSXElementAt, mutateClassName, mutateTextContent, mutateReorder, } from "./transform.js";
+-import { resolveProjectFilePath, isProjectFilePathSafe } from "./path-resolver.js";
++import { resolveProjectFilePath, isProjectFilePathSafe, writeProjectFileAtomically } from "./path-resolver.js";
+ import { logger } from "./logger.js";
+ /** Get the primary line number from any BatchOperation variant. */
+ function getOpLine(op) {
+@@ -594,7 +594,7 @@ export function executeBatch(operations, projectRoot) {
+         if (fileHasChanges) {
+             try {
+                 const afterContent = root.toSource({ quote: quoteStyle });
+-                fs.writeFileSync(resolvedPath, afterContent, "utf-8");
++                writeProjectFileAtomically(resolvedPath, afterContent, projectRoot);
+                 undoEntries.push({ filePath: resolvedPath, content: beforeContent, afterContent });
+             }
+             catch (err) {
+diff --git a/dist/index.js b/dist/index.js
+index 327374a7987c64b576409a05b884fe8451a49336..e12d1e10670424088d3ab24e3cbaa23fa7961bbc 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -5,8 +5,8 @@ import open from "open";
+ import { detect, healthCheck } from "./detect.js";
+ import { createProxyServer } from "./inject.js";
+ import { createSketchServer } from "./server.js";
+-import { getAvailablePort } from "./utils.js";
+ import { logger, setLogLevel } from "./logger.js";
++import { isAbsolute as pathIsAbsolute } from "node:path";
+ program
+     .name("react-rewrite")
+     .description("Visual overlay for React dev servers")
+@@ -21,6 +21,18 @@ program
+             setLogLevel("debug");
+         }
+         const host = opts.host || "localhost";
++        if (host !== "127.0.0.1") {
++            throw new Error("ReactRewrite managed mode requires --host 127.0.0.1");
++        }
++        const capability = process.env.REACT_REWRITE_CAPABILITY || "";
++        const projectRoot = process.env.REACT_REWRITE_PROJECT_ROOT || "";
++        const proxyPort = Number(process.env.REACT_REWRITE_PROXY_PORT);
++        const wsPort = Number(process.env.REACT_REWRITE_WS_PORT);
++        const validManagedPort = (value) => Number.isInteger(value) && value >= 1024 && value <= 65535;
++        if (!/^[A-Za-z0-9_-]{43,}$/.test(capability) || !pathIsAbsolute(projectRoot)
++            || !validManagedPort(proxyPort) || !validManagedPort(wsPort) || proxyPort === wsPort) {
++            throw new Error("ReactRewrite managed mode requires a high-entropy capability, absolute project root, and explicit proxy ports");
++        }
+         logger.info(chalk.cyan("\n  ReactRewrite") + chalk.dim(" — React visual overlay\n"));
+         // Detect framework
+-        const detection = await detect();
++        const detection = await detect(projectRoot);
+@@ -32,26 +44,33 @@ program
+         logger.info(chalk.dim("  Checking dev server..."));
+         await healthCheck(targetPort, host);
+         // Start WebSocket server
+-        const wsPort = await getAvailablePort(3457);
+-        const sketchServer = createSketchServer({ port: wsPort });
++        const allowedOrigin = `http://127.0.0.1:${proxyPort}`;
++        const sketchServer = createSketchServer({
++            port: wsPort,
++            host: "127.0.0.1",
++            capability,
++            allowedOrigin,
++            projectRoot,
++        });
+         // Start proxy server
+-        const proxyPort = await getAvailablePort(3456);
+         const proxyServer = createProxyServer({
+             targetPort,
+             targetHost: host,
+             proxyPort,
+             wsPort,
++            wsHost: "127.0.0.1",
++            capability,
+             getActiveClient: sketchServer.getActiveClient,
+         });
+-        proxyServer.listen(proxyPort, () => {
++        proxyServer.listen(proxyPort, "127.0.0.1", () => {
+             logger.info(chalk.dim("  Proxy: ") +
+-                chalk.green(`http://localhost:${proxyPort}`));
+-            logger.info(chalk.dim("  WebSocket: ") + chalk.green(`ws://localhost:${wsPort}`));
++                chalk.green(`http://127.0.0.1:${proxyPort}`));
++            logger.info(chalk.dim("  WebSocket: ") + chalk.green(`ws://127.0.0.1:${wsPort}`));
+             logger.info(chalk.dim("\n  Press ") +
+                 chalk.white("Ctrl+C") +
+                 chalk.dim(" to stop\n"));
+             if (program.opts().open !== false) {
+-                open(`http://localhost:${proxyPort}`);
++                open(`http://127.0.0.1:${proxyPort}`);
+             }
+         });
+         // Graceful shutdown
+diff --git a/dist/inject.d.ts b/dist/inject.d.ts
+index ee39fd13c0a54dbb975b6fecf4e0645454e048fd..7faba88c1788f74902ce636ceb34acf10ddb88a2 100644
+--- a/dist/inject.d.ts
++++ b/dist/inject.d.ts
+@@ -5,6 +5,8 @@ interface ProxyServerOptions {
+     targetHost: string;
+     proxyPort: number;
+     wsPort: number;
++    wsHost: "127.0.0.1";
++    capability: string;
+     getActiveClient: () => WebSocket | null;
+ }
+ export declare function createProxyServer(options: ProxyServerOptions): http.Server;
+diff --git a/dist/inject.js b/dist/inject.js
+index f8e528e0575e37d3dc76459f450ecc54bcd1af06..6cbc7898d0e6d391e7a89108f74e767e51c2fdf4 100644
+--- a/dist/inject.js
++++ b/dist/inject.js
+@@ -8,7 +8,7 @@ import { WebSocket } from "ws";
+ const __filename = fileURLToPath(import.meta.url);
+ const __dirname = path.dirname(__filename);
+ export function createProxyServer(options) {
+-    const { targetPort, targetHost, proxyPort, wsPort, getActiveClient } = options;
++    const { targetPort, targetHost, proxyPort, wsPort, wsHost, capability, getActiveClient } = options;
+     const proxy = httpProxy.createProxyServer({
+         target: `http://${targetHost}:${targetPort}`,
+         ws: true,
+@@ -22,6 +22,13 @@ export function createProxyServer(options) {
+     let upstreamDown = false;
+     const fontsDir = path.join(__dirname, "fonts");
+     const server = http.createServer((req, res) => {
++        const remoteAddress = req.socket.remoteAddress;
++        const loopback = remoteAddress === "127.0.0.1" || remoteAddress === "::1" || remoteAddress === "::ffff:127.0.0.1";
++        if (!loopback || req.headers.host !== `127.0.0.1:${proxyPort}`) {
++            res.writeHead(421, { "Content-Type": "text/plain" });
++            res.end("Misdirected request");
++            return;
++        }
+         // Normalize URL to prevent path traversal
+         const normalizedUrl = new URL(req.url || "/", "http://localhost").pathname;
+         // Serve overlay bundle
+@@ -73,8 +80,25 @@ export function createProxyServer(options) {
+         proxyRes.on("end", () => {
+             let body = Buffer.concat(chunks).toString("utf-8");
+             const injectedScript = `
+-<script src="/__react-rewrite/overlay.js"></script>
+-<script>window.__REACT_REWRITE_WS_PORT__ = ${wsPort};</script>`;
++<script>(() => {
++  const NativeWebSocket = window.WebSocket;
++  const editorPort = ${wsPort};
++  const editorHost = ${JSON.stringify(wsHost)};
++  const capability = ${JSON.stringify(capability)};
++  window.__REACT_REWRITE_WS_PORT__ = editorPort;
++  window.WebSocket = class LargerAuthenticatedWebSocket extends NativeWebSocket {
++    constructor(url, protocols) {
++      let parsed;
++      try { parsed = new URL(String(url)); } catch {}
++      if (parsed && parsed.protocol === "ws:" && parsed.hostname === "localhost" && parsed.port === String(editorPort)) {
++        super("ws://" + editorHost + ":" + editorPort, ["larger", capability]);
++        return;
++      }
++      super(url, protocols);
++    }
++  };
++})();</script>
++<script src="/__react-rewrite/overlay.js"></script>`;
+             if (body.includes("</body>")) {
+                 body = body.replace("</body>", `${injectedScript}\n</body>`);
+             }
+diff --git a/dist/path-resolver.d.ts b/dist/path-resolver.d.ts
+index 8d79f0d067f69990a0ed37aa1a0968fa06df0f21..446c1a9e3c2cf955f4cc93621753005be91c8a1d 100644
+--- a/dist/path-resolver.d.ts
++++ b/dist/path-resolver.d.ts
+@@ -14,4 +14,5 @@
+  */
+ export declare function resolveProjectFilePath(filePath: string, projectRoot: string): string | null;
+ export declare function isProjectFilePathSafe(filePath: string, projectRoot: string): boolean;
++export declare function writeProjectFileAtomically(filePath: string, contents: string, projectRoot: string): void;
+ //# sourceMappingURL=path-resolver.d.ts.map
+diff --git a/dist/path-resolver.js b/dist/path-resolver.js
+index 1b75de2244bc2778ffdb7407679886434fbcfd33..640ad59a6ca9a2d8bc5ea291cda811364f3a69de 100644
+--- a/dist/path-resolver.js
++++ b/dist/path-resolver.js
+@@ -1,5 +1,6 @@
+ import * as fs from "node:fs";
+ import * as path from "node:path";
++import { randomUUID } from "node:crypto";
+ function isWithinProjectRoot(resolvedPath, projectRoot) {
+     return resolvedPath === projectRoot || resolvedPath.startsWith(projectRoot + path.sep);
+ }
+@@ -44,6 +45,82 @@ export function resolveProjectFilePath(filePath, projectRoot) {
+         : null;
+ }
+ export function isProjectFilePathSafe(filePath, projectRoot) {
+-    return resolveProjectFilePath(filePath, projectRoot) !== null;
++    const candidate = resolveProjectFilePath(filePath, projectRoot);
++    if (!candidate)
++        return false;
++    try {
++        const canonicalRoot = fs.realpathSync.native(path.resolve(projectRoot));
++        const canonicalCandidate = fs.realpathSync.native(candidate);
++        const relative = path.relative(canonicalRoot, canonicalCandidate);
++        if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
++            return false;
++        let current = canonicalRoot;
++        const segments = relative.split(path.sep);
++        for (let index = 0; index < segments.length; index += 1) {
++            current = path.join(current, segments[index]);
++            const metadata = fs.lstatSync(current);
++            if (metadata.isSymbolicLink())
++                return false;
++            if (index < segments.length - 1 && !metadata.isDirectory())
++                return false;
++        }
++        const metadata = fs.lstatSync(current);
++        if (!metadata.isFile())
++            return false;
++        return isWithinProjectRoot(fs.realpathSync.native(current), canonicalRoot);
++    }
++    catch {
++        return false;
++    }
++}
++export function writeProjectFileAtomically(filePath, contents, projectRoot) {
++    if (!isProjectFilePathSafe(filePath, projectRoot))
++        throw new Error("File path is outside the project root or traverses a symbolic link");
++    const resolvedCandidate = resolveProjectFilePath(filePath, path.resolve(projectRoot));
++    if (!resolvedCandidate)
++        throw new Error("File path could not be resolved inside the project root");
++    const canonicalRoot = fs.realpathSync.native(path.resolve(projectRoot));
++    const resolvedPath = fs.realpathSync.native(resolvedCandidate);
++    const before = fs.lstatSync(resolvedPath);
++    if (!before.isFile() || before.isSymbolicLink())
++        throw new Error("Project edit target must be a regular file");
++    const parent = path.dirname(resolvedPath);
++    if (!isWithinProjectRoot(fs.realpathSync.native(parent), canonicalRoot))
++        throw new Error("Project edit target parent escaped the project root");
++    const temporary = path.join(parent, `.react-rewrite-${process.pid}-${randomUUID()}.tmp`);
++    let descriptor;
++    try {
++        descriptor = fs.openSync(temporary, "wx", before.mode & 0o777);
++        fs.writeFileSync(descriptor, contents, "utf8");
++        fs.fsyncSync(descriptor);
++        fs.closeSync(descriptor);
++        descriptor = undefined;
++        if (!isProjectFilePathSafe(resolvedPath, canonicalRoot))
++            throw new Error("Project edit target changed before replacement");
++        const current = fs.lstatSync(resolvedPath);
++        if (current.dev !== before.dev || current.ino !== before.ino || current.size !== before.size || current.mtimeMs !== before.mtimeMs)
++            throw new Error("Project edit target changed before replacement");
++        fs.renameSync(temporary, resolvedPath);
++        const parentDescriptor = fs.openSync(parent, "r");
++        try {
++            fs.fsyncSync(parentDescriptor);
++        }
++        finally {
++            fs.closeSync(parentDescriptor);
++        }
++        if (!isProjectFilePathSafe(resolvedPath, canonicalRoot))
++            throw new Error("Project edit target escaped after replacement");
++    }
++    finally {
++        if (descriptor !== undefined)
++            fs.closeSync(descriptor);
++        try {
++            fs.unlinkSync(temporary);
++        }
++        catch (error) {
++            if (error?.code !== "ENOENT")
++                throw error;
++        }
++    }
+ }
+ //# sourceMappingURL=path-resolver.js.map
+diff --git a/dist/server.d.ts b/dist/server.d.ts
+index e645d20a6c37f3298f9f2fd5155488a37efd3a38..9fd51d4a2e7e6ecdc6019a34610be21dad0c58ff 100644
+--- a/dist/server.d.ts
++++ b/dist/server.d.ts
+@@ -1,6 +1,10 @@
+ import { WebSocketServer, WebSocket } from "ws";
+ interface SketchServerOptions {
+     port: number;
++    host: "127.0.0.1";
++    capability: string;
++    allowedOrigin: string;
++    projectRoot: string;
+ }
+ interface SketchServer {
+     wss: WebSocketServer;
+diff --git a/dist/server.js b/dist/server.js
+index 386321f35774711d48b5c4f9b95e85bad1267035..ee323d13e4e3a5c23e0dec99448f15653fb6b995 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -6,13 +6,29 @@ import { randomUUID } from "node:crypto";
+ import { reorderComponent, getSiblings } from "./transform.js";
+ import { logger } from "./logger.js";
+ import { resolveTailwindConfig } from "./tailwind-resolver.js";
+-import { isProjectFilePathSafe, resolveProjectFilePath } from "./path-resolver.js";
++import { isProjectFilePathSafe, resolveProjectFilePath, writeProjectFileAtomically } from "./path-resolver.js";
+ import { discoverFile } from "./file-discovery.js";
+ import { executeBatch } from "./batch-transform.js";
+ export function createSketchServer(portOrOptions) {
+     const port = typeof portOrOptions === "number" ? portOrOptions : portOrOptions.port;
+-    const wss = new WebSocketServer({ port });
+-    const projectRoot = path.resolve(process.cwd());
++    const host = typeof portOrOptions === "number" ? "127.0.0.1" : portOrOptions.host;
++    const capability = typeof portOrOptions === "number" ? "" : portOrOptions.capability;
++    const allowedOrigin = typeof portOrOptions === "number" ? "" : portOrOptions.allowedOrigin;
++    if (host !== "127.0.0.1" || !/^[A-Za-z0-9_-]{43,}$/.test(capability) || !allowedOrigin)
++        throw new Error("ReactRewrite requires a loopback host, high-entropy capability, and allowed origin");
++    const wss = new WebSocketServer({
++        port,
++        host,
++        maxPayload: 1_048_576,
++        verifyClient: ({ origin, req }) => {
++            const protocols = String(req.headers["sec-websocket-protocol"] || "").split(",").map((value) => value.trim());
++            const remoteAddress = req.socket.remoteAddress;
++            const loopback = remoteAddress === "127.0.0.1" || remoteAddress === "::1" || remoteAddress === "::ffff:127.0.0.1";
++            return loopback && origin === allowedOrigin && protocols.includes("larger") && protocols.includes(capability);
++        },
++        handleProtocols: (protocols) => protocols.has("larger") ? "larger" : false,
++    });
++    const projectRoot = path.resolve(typeof portOrOptions === "number" ? process.cwd() : portOrOptions.projectRoot);
+     const undoStack = [];
+     let activeClient = null;
+     let processing = false;
+@@ -51,7 +67,7 @@ export function createSketchServer(portOrOptions) {
+                     const undoId = randomUUID();
+                     try {
+                         const newSource = reorderComponent(resolvedPath, msg.fromLine, msg.toLine);
+-                        fs.writeFileSync(resolvedPath, newSource, "utf-8");
++                        writeProjectFileAtomically(resolvedPath, newSource, projectRoot);
+                         undoStack.push({
+                             id: undoId,
+                             filePath: resolvedPath,
+@@ -80,7 +96,7 @@ export function createSketchServer(portOrOptions) {
+                         });
+                     }
+                     else {
+-                        fs.writeFileSync(entry.filePath, entry.content, "utf-8");
++                        writeProjectFileAtomically(entry.filePath, entry.content, projectRoot);
+                         send(ws, { type: "undoComplete", success: true });
+                     }
+                     break;
+@@ -274,7 +290,7 @@ export function createSketchServer(portOrOptions) {
+                             }
+                             // Write back the earliest entry's beforeContent (restores original state)
+                             const earliest = group[group.length - 1].entry;
+-                            fs.writeFileSync(filePath, earliest.content, "utf-8");
++                            writeProjectFileAtomically(filePath, earliest.content, projectRoot);
+                             for (const { id, entry } of group) {
+                                 entry.reverted = true;
+                                 results.push({ undoId: id, success: true });

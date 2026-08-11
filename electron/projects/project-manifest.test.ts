@@ -131,7 +131,7 @@ test("runs migration hooks one schema version at a time", () => {
     { schemaVersion: 0, legacyName: "Example" },
     { 0: (value) => ({ schemaVersion: 1, name: value.legacyName }) },
   );
-  assert.deepEqual(migrated, { schemaVersion: 1, name: "Example" });
+  assert.deepEqual(migrated, { schemaVersion: 2, name: "Example" });
   assert.throws(
     () => runSequentialManifestMigrations({ schemaVersion: 0 }),
     (cause) => cause instanceof ProjectManifestValidationError && cause.errors[0]?.code === "unsupported_version",
@@ -140,9 +140,19 @@ test("runs migration hooks one schema version at a time", () => {
 
 test("rejects future manifest versions without silently downgrading", () => {
   assert.throws(
-    () => normalizeProjectManifest({ ...validManifest, schemaVersion: 2 }),
+    () => normalizeProjectManifest({ ...validManifest, schemaVersion: 3 }),
     (cause) => cause instanceof ProjectManifestValidationError && cause.errors[0]?.code === "unsupported_version",
   );
+});
+
+test("migrates v1 runtime profiles to explicit v2 launch boundaries", () => {
+  const normalized = normalizeProjectManifest(validManifest);
+  assert.equal(normalized.schemaVersion, 2);
+  assert.equal(normalized.runtimeProfiles.production?.host, "127.0.0.1");
+  assert.equal(normalized.runtimeProfiles.production?.dependencyRoot, "apps/web");
+  assert.deepEqual(normalized.runtimeProfiles.production?.readiness, { path: "/preview", timeoutMs: 60_000 });
+  assert.deepEqual(normalized.runtimeProfiles.production?.environment, { literals: {}, inherit: [], secrets: {} });
+  assert.equal(normalized.runtimeProfiles.production?.runtimeAdapter, "auto");
 });
 
 test("reads the project-owned .larger/project.json location", async (context) => {

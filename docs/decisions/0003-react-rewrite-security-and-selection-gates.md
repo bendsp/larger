@@ -1,14 +1,18 @@
 # ADR 0003: React Rewrite security and selection gates
 
-Status: accepted gate; bridge implementation pending
+Status: accepted; maintained package patch implemented in Sprint 03
 
 ## Decision
 
 React Rewrite remains a pinned adapter dependency, optionally accompanied by a thin mechanically rebaseable patch or companion. A full fork requires a separate reviewed decision.
 
+The maintained base is `react-rewrite-cli@0.1.1`, published from upstream commit `d19d8e952b69f99700b0d86e4c056379c067dfd8`. The pnpm patch is intentionally limited to the shipped CLI files and must fail closed when rebasing if those files no longer match.
+
 Before the first managed editor launch in Sprint 03, the adapter must enforce explicit loopback binding, a high-entropy per-session capability, browser Origin validation, canonical runtime containment, and symlink/path revalidation at write time. Failure of any probe blocks readiness.
 
 Larger cannot claim studio-owned selection until a real fixture proves a structured component/file/line event across an authenticated, generation-bound bridge.
+
+The current patch binds both listeners to `127.0.0.1`, carries the capability as a WebSocket subprotocol rather than a URL secret, validates Origin and the remote address, limits WebSocket payloads, injects authentication before the upstream overlay runs, rejects symbolic-link traversal, and replaces runtime files through a same-directory fsynced atomic writer after content and identity revalidation. The Electron adapter still owns startup self-probes and must not publish a surface until they pass.
 
 ## Selection spike order
 

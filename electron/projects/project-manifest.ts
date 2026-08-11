@@ -12,13 +12,49 @@ const MAX_PROJECT_MANIFEST_BYTES = 256_000;
 
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/;
 const PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SECRET_REFERENCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const SECRET_ARGUMENT_PATTERN = /^[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*=/i;
 const SECRET_FLAG_PATTERN = /^--?(?:token|secret|password|passwd|api[-_]?key|private[-_]?key)(?:=|$)/i;
+const SECRET_ENVIRONMENT_PATTERN = /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)/i;
 const TOP_LEVEL_FIELDS = new Set(["$schema", "schemaVersion", "projectId", "name", "defaultRuntimeProfile", "runtimeProfiles"]);
-const PROFILE_FIELDS = new Set(["command", "workingDirectory", "host", "preferredPort", "entryRoute", "editorAdapter"]);
+const PROFILE_FIELDS = new Set([
+  "command",
+  "workingDirectory",
+  "dependencyRoot",
+  "host",
+  "preferredPort",
+  "readiness",
+  "entryRoute",
+  "environment",
+  "runtimeAdapter",
+  "editorAdapter",
+]);
+const READINESS_FIELDS = new Set(["path", "timeoutMs"]);
+const ENVIRONMENT_FIELDS = new Set(["literals", "inherit", "secrets"]);
 
 export type ManifestMigration = (manifest: Record<string, unknown>) => Record<string, unknown>;
 export type ManifestMigrations = Readonly<Record<number, ManifestMigration>>;
+
+const BUILT_IN_MANIFEST_MIGRATIONS: ManifestMigrations = {
+  1: (manifest) => {
+    if (!isObject(manifest.runtimeProfiles)) return { ...manifest, schemaVersion: 2 };
+    const runtimeProfiles = Object.fromEntries(Object.entries(manifest.runtimeProfiles).map(([name, value]) => {
+      if (!isObject(value)) return [name, value];
+      const entryRoute = typeof value.entryRoute === "string" ? value.entryRoute : "/";
+      return [name, {
+        ...value,
+        dependencyRoot: typeof value.workingDirectory === "string" ? value.workingDirectory : ".",
+        host: "127.0.0.1",
+        readiness: { path: entryRoute, timeoutMs: 60_000 },
+        environment: { literals: {}, inherit: [], secrets: {} },
+        runtimeAdapter: "auto",
+      }];
+    }));
+    return { ...manifest, schemaVersion: 2, runtimeProfiles };
+  },
+};
 
 export class ProjectManifestValidationError extends Error {
   readonly errors: ManifestFieldError[];
@@ -96,6 +132,109 @@ function normalizeRelativePath(value: string, fieldPath: string, errors: Manifes
   return normalized || ".";
 }
 
+function normalizeRoute(value: string, fieldPath: string, errors: ManifestFieldError[]): string | null {
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("\0")) {
+    error(errors, fieldPath, "invalid_value", "must be an application-relative path beginning with one slash");
+    return null;
+  }
+  return value;
+}
+
+function normalizeEnvironment(
+  value: unknown,
+  basePath: string,
+  errors: ManifestFieldError[],
+): RuntimeProfile["environment"] | null {
+  if (!isObject(value)) {
+    error(errors, basePath, "invalid_type", "must be an object");
+    return null;
+  }
+  rejectUnknownFields(value, ENVIRONMENT_FIELDS, basePath, errors);
+
+  const literalsValue = value.literals;
+  const literals: Record<string, string> = {};
+  if (!isObject(literalsValue)) {
+    error(errors, `${basePath}/literals`, literalsValue === undefined ? "missing" : "invalid_type", "must be an object of non-secret string values");
+  } else {
+    for (const name of Object.keys(literalsValue).sort()) {
+      const item = literalsValue[name];
+      if (!ENVIRONMENT_NAME_PATTERN.test(name)) {
+        error(errors, `${basePath}/literals/${name}`, "invalid_value", "environment name is invalid");
+      } else if (SECRET_ENVIRONMENT_PATTERN.test(name)) {
+        error(errors, `${basePath}/literals/${name}`, "invalid_value", "secret-like values must use a user-local secret reference");
+      } else if (typeof item !== "string") {
+        error(errors, `${basePath}/literals/${name}`, "invalid_type", "must be a string");
+      } else {
+        literals[name] = item;
+      }
+    }
+  }
+
+  const inheritValue = value.inherit;
+  const inherit: string[] = [];
+  if (!Array.isArray(inheritValue)) {
+    error(errors, `${basePath}/inherit`, inheritValue === undefined ? "missing" : "invalid_type", "must be an array of environment names");
+  } else {
+    for (const [index, name] of inheritValue.entries()) {
+      if (typeof name !== "string" || !ENVIRONMENT_NAME_PATTERN.test(name)) {
+        error(errors, `${basePath}/inherit/${index}`, "invalid_value", "must be a valid environment name");
+      } else if (!inherit.includes(name)) {
+        inherit.push(name);
+      }
+    }
+  }
+
+  const secretsValue = value.secrets;
+  const secrets: Record<string, string> = {};
+  if (!isObject(secretsValue)) {
+    error(errors, `${basePath}/secrets`, secretsValue === undefined ? "missing" : "invalid_type", "must be an object of user-local secret references");
+  } else {
+    for (const name of Object.keys(secretsValue).sort()) {
+      const reference = secretsValue[name];
+      if (!ENVIRONMENT_NAME_PATTERN.test(name)) {
+        error(errors, `${basePath}/secrets/${name}`, "invalid_value", "environment name is invalid");
+      } else if (typeof reference !== "string" || !SECRET_REFERENCE_PATTERN.test(reference)) {
+        error(errors, `${basePath}/secrets/${name}`, "invalid_value", "must be a valid user-local secret reference");
+      } else {
+        secrets[name] = reference;
+      }
+    }
+  }
+
+  if (!isObject(literalsValue) || !Array.isArray(inheritValue) || !isObject(secretsValue)) return null;
+  const duplicate = inherit.find((name) => name in literals || name in secrets)
+    ?? Object.keys(literals).find((name) => name in secrets);
+  if (duplicate) {
+    error(errors, basePath, "invalid_value", `environment variable ${duplicate} is declared more than once`);
+    return null;
+  }
+  return { literals, inherit, secrets };
+}
+
+function normalizeReadiness(
+  value: unknown,
+  basePath: string,
+  errors: ManifestFieldError[],
+): RuntimeProfile["readiness"] | null {
+  if (!isObject(value)) {
+    error(errors, basePath, "invalid_type", "must be an object");
+    return null;
+  }
+  rejectUnknownFields(value, READINESS_FIELDS, basePath, errors);
+  const pathValue = requiredString(value, "path", basePath, errors);
+  const readinessPath = pathValue === null ? null : normalizeRoute(pathValue, `${basePath}/path`, errors);
+  const timeoutValue = value.timeoutMs;
+  const timeoutMs = Number.isInteger(timeoutValue) && Number(timeoutValue) >= 1_000 && Number(timeoutValue) <= 300_000
+    ? Number(timeoutValue)
+    : null;
+  if (timeoutValue === undefined) {
+    error(errors, `${basePath}/timeoutMs`, "missing", "field is required");
+  } else if (timeoutMs === null) {
+    error(errors, `${basePath}/timeoutMs`, "invalid_value", "must be an integer between 1000 and 300000");
+  }
+  return readinessPath === null || timeoutMs === null ? null : { path: readinessPath, timeoutMs };
+}
+
 function normalizeProfile(
   value: unknown,
   basePath: string,
@@ -136,10 +275,14 @@ function normalizeProfile(
   const workingDirectory = workingDirectoryValue === null
     ? null
     : normalizeRelativePath(workingDirectoryValue, `${basePath}/workingDirectory`, errors);
+  const dependencyRootValue = requiredString(value, "dependencyRoot", basePath, errors);
+  const dependencyRoot = dependencyRootValue === null
+    ? null
+    : normalizeRelativePath(dependencyRootValue, `${basePath}/dependencyRoot`, errors);
   const hostValue = requiredString(value, "host", basePath, errors);
-  const host = hostValue === "127.0.0.1" || hostValue === "localhost" ? hostValue : null;
+  const host = hostValue === "127.0.0.1" ? hostValue : null;
   if (hostValue !== null && host === null) {
-    error(errors, `${basePath}/host`, "invalid_value", "must be a loopback host");
+    error(errors, `${basePath}/host`, "invalid_value", "must be the literal IPv4 loopback address 127.0.0.1");
   }
 
   const portValue = value.preferredPort;
@@ -152,16 +295,48 @@ function normalizeProfile(
     error(errors, `${basePath}/preferredPort`, "invalid_value", "must be an integer between 1024 and 65535");
   }
 
-  const entryRoute = requiredString(value, "entryRoute", basePath, errors);
-  if (entryRoute !== null && (!entryRoute.startsWith("/") || entryRoute.startsWith("//"))) {
-    error(errors, `${basePath}/entryRoute`, "invalid_value", "must be an application-relative route beginning with one slash");
+  const readiness = normalizeReadiness(value.readiness, `${basePath}/readiness`, errors);
+  const entryRouteValue = requiredString(value, "entryRoute", basePath, errors);
+  const entryRoute = entryRouteValue === null ? null : normalizeRoute(entryRouteValue, `${basePath}/entryRoute`, errors);
+  const environment = normalizeEnvironment(value.environment, `${basePath}/environment`, errors);
+  const runtimeAdapter = requiredString(value, "runtimeAdapter", basePath, errors);
+  if (runtimeAdapter !== null && !ADAPTER_ID_PATTERN.test(runtimeAdapter)) {
+    error(errors, `${basePath}/runtimeAdapter`, "invalid_value", "must be a valid adapter identifier");
   }
-  const editorAdapter = requiredString(value, "editorAdapter", basePath, errors);
+  const editorAdapterValue = value.editorAdapter;
+  const editorAdapter = editorAdapterValue === null
+    ? null
+    : requiredString(value, "editorAdapter", basePath, errors);
+  if (editorAdapter !== null && !ADAPTER_ID_PATTERN.test(editorAdapter)) {
+    error(errors, `${basePath}/editorAdapter`, "invalid_value", "must be null or a valid adapter identifier");
+  }
 
-  if (command === null || workingDirectory === null || host === null || preferredPort === null || entryRoute === null || editorAdapter === null) {
+  if (
+    command === null
+    || workingDirectory === null
+    || dependencyRoot === null
+    || host === null
+    || preferredPort === null
+    || readiness === null
+    || entryRoute === null
+    || environment === null
+    || runtimeAdapter === null
+    || (editorAdapterValue !== null && editorAdapter === null)
+  ) {
     return null;
   }
-  return { command, workingDirectory, host, preferredPort, entryRoute, editorAdapter };
+  return {
+    command,
+    workingDirectory,
+    dependencyRoot,
+    host,
+    preferredPort,
+    readiness,
+    entryRoute,
+    environment,
+    runtimeAdapter,
+    editorAdapter,
+  };
 }
 
 export function runSequentialManifestMigrations(
@@ -169,6 +344,7 @@ export function runSequentialManifestMigrations(
   migrations: ManifestMigrations = {},
 ): Record<string, unknown> {
   let current = { ...input };
+  const activeMigrations: ManifestMigrations = { ...BUILT_IN_MANIFEST_MIGRATIONS, ...migrations };
   const initialVersion = current.schemaVersion;
   if (initialVersion === undefined) {
     throw new ProjectManifestValidationError([
@@ -188,7 +364,7 @@ export function runSequentialManifestMigrations(
 
   while (Number(current.schemaVersion) < PROJECT_MANIFEST_VERSION) {
     const version = Number(current.schemaVersion);
-    const migration = migrations[version];
+    const migration = activeMigrations[version];
     if (!migration) {
       throw new ProjectManifestValidationError([
         { path: "/schemaVersion", code: "unsupported_version", message: `no migration is registered from version ${version}` },
@@ -307,9 +483,20 @@ export function serializeProjectManifest(manifest: ProjectManifest): string {
       return [name, {
         command: [...profile.command],
         workingDirectory: profile.workingDirectory,
+        dependencyRoot: profile.dependencyRoot,
         host: profile.host,
         preferredPort: profile.preferredPort,
+        readiness: {
+          path: profile.readiness.path,
+          timeoutMs: profile.readiness.timeoutMs,
+        },
         entryRoute: profile.entryRoute,
+        environment: {
+          literals: Object.fromEntries(Object.keys(profile.environment.literals).sort().map((key) => [key, profile.environment.literals[key]])),
+          inherit: [...profile.environment.inherit].sort(),
+          secrets: Object.fromEntries(Object.keys(profile.environment.secrets).sort().map((key) => [key, profile.environment.secrets[key]])),
+        },
+        runtimeAdapter: profile.runtimeAdapter,
         editorAdapter: profile.editorAdapter,
       }];
     }),

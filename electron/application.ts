@@ -20,6 +20,22 @@ import { registerChangeIpc } from "./ipc/change-ipc.js";
 import { ChangeService } from "./changes/change-service.js";
 import { CanvasController } from "./canvas-controller.js";
 import { WindowStateStore } from "./storage/window-state-store.js";
+import { DependencyService } from "./runtime-workspaces/dependencies/service.js";
+import { SupervisedDependencyCommandRunner } from "./runtime-workspaces/dependencies/supervised-command-runner.js";
+import { DependencyServiceRuntimePreparer } from "./runtime/dependency-preparer.js";
+import {
+  ProcessEnvironmentSecretProvider,
+  RuntimeEnvironmentBuilder,
+  currentProcessEnvironmentSource,
+} from "./runtime/environment.js";
+import { StaticEditorAdapterRegistry } from "./runtime/editor-adapter.js";
+import { ReactRewriteEditorAdapter } from "./runtime/editors/react-rewrite/index.js";
+import { FetchReadinessProbe, LoopbackPortAllocator, LoopbackRuntimeDiscoveryProvider } from "./runtime/network.js";
+import { FileOwnershipStore } from "./runtime/ownership-store.js";
+import { DarwinProcessSupervisor } from "./runtime/process-supervisor.js";
+import { createDefaultRuntimeAdapterRegistry } from "./runtime/runtime-adapter.js";
+import { RuntimeService } from "./runtime/runtime-service.js";
+import { registerRuntimeIpc } from "./ipc/runtime-ipc.js";
 
 const DEVELOPMENT_URL = "http://127.0.0.1:4310";
 
@@ -65,6 +81,56 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
     workspaces,
     activity: projectActivity,
   });
+  const dependencyServices = new Map<string, Promise<DependencyService>>();
+  const processEnvironment = currentProcessEnvironmentSource();
+  const processSupervisor = new DarwinProcessSupervisor({
+    ownership: new FileOwnershipStore(path.join(userData, "runtime", "ownership")),
+  });
+  const runtimeService = new RuntimeService({
+    projects: {
+      current(generation) {
+        const snapshot = projectManager.snapshot();
+        const active = snapshot.active;
+        if (snapshot.transition || !active || active.generation !== generation) return undefined;
+        return {
+          identity: active.identity,
+          generation: active.generation,
+          trusted: active.trust === "trusted",
+          profiles: active.manifest.runtimeProfiles,
+        };
+      },
+      adoptWorkspace(generation, instanceKey, workspace) {
+        return projectManager.adoptPublishedWorkspace(generation, instanceKey, workspace);
+      },
+    },
+    workspaces,
+    dependencies: new DependencyServiceRuntimePreparer({
+      for(project) {
+        const key = project.identity.instanceKey;
+        let service = dependencyServices.get(key);
+        if (!service) {
+          service = DependencyService.open({
+            userDataPath: userData,
+            localInstanceKey: key,
+            commandRunner: new SupervisedDependencyCommandRunner({
+              supervisor: processSupervisor,
+              projectInstanceKey: key,
+            }),
+          });
+          dependencyServices.set(key, service);
+        }
+        return service;
+      },
+    }),
+    environment: new RuntimeEnvironmentBuilder(processEnvironment, new ProcessEnvironmentSecretProvider(processEnvironment)),
+    runtimeAdapters: createDefaultRuntimeAdapterRegistry(),
+    editorAdapters: new StaticEditorAdapterRegistry([new ReactRewriteEditorAdapter()]),
+    supervisor: processSupervisor,
+    ports: new LoopbackPortAllocator(),
+    readiness: new FetchReadinessProbe(),
+    discovery: new LoopbackRuntimeDiscoveryProvider(),
+  });
+  const unregisterRuntimeActivity = projectActivity.registerRuntimeParticipant(runtimeService);
 
   let mainWindow: BrowserWindow | null = null;
   const assertTrustedSender = (event: IpcMainInvokeEvent | IpcMainEvent): void => {
@@ -142,15 +208,22 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
     getWindow: () => mainWindow,
     assertTrustedSender,
   });
+  const disposeRuntimeIpc = registerRuntimeIpc({
+    ipcMain,
+    service: runtimeService,
+    getWindow: () => mainWindow,
+    assertTrustedSender,
+  });
   const canvasController = new CanvasController({
     ipcMain,
-    shell,
     manager: projectManager,
+    runtime: runtimeService,
     getWindow: () => mainWindow,
     assertTrustedSender,
   });
 
   createWindow();
+  await runtimeService.recover();
   await projectManager.bootstrap();
 
   return {
@@ -165,9 +238,13 @@ export async function createDesktopApplication(): Promise<DesktopApplication> {
       }
       await windowStateWrite;
       canvasController.dispose();
+      disposeRuntimeIpc();
       disposeChangeIpc();
       disposeProjectIpc();
+      await runtimeService.dispose();
+      unregisterRuntimeActivity();
       projectManager.dispose();
+      dependencyServices.clear();
       workspaces.clear();
       mainWindow?.destroy();
       mainWindow = null;

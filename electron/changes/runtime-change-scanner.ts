@@ -38,6 +38,10 @@ type RuntimeEntry =
   | { readonly type: "symlink"; readonly mode: number; readonly target: string }
   | { readonly type: "special"; readonly mode: number };
 
+const RUNTIME_OBSERVATION_ATTEMPTS = 3;
+const RUNTIME_OBSERVATION_RETRY_DELAY_MS = 10;
+const REACT_REWRITE_TEMPORARY_FILE = /^\.react-rewrite-\d+-[0-9a-f-]+\.tmp$/i;
+
 export interface RuntimeChangeScan {
   readonly baselineIdentity: string;
   readonly runtimeId: string;
@@ -138,7 +142,7 @@ async function observeRuntime(
     );
     for (const child of children) {
       signal?.throwIfAborted();
-      if (isInventoryPathExcluded(relativeDirectory, child.name)) continue;
+      if (isInventoryPathExcluded(relativeDirectory, child.name) || REACT_REWRITE_TEMPORARY_FILE.test(child.name)) continue;
       const relativePath = manifestPath(path.join(relativeDirectory, child.name));
       const entryPath = manifestEntryPath(runtimeRoot, relativePath);
       const stat = await lstat(entryPath);
@@ -166,6 +170,40 @@ async function observeRuntime(
 
   await walk("");
   return entries;
+}
+
+function isTransientRuntimeObservationError(error: unknown, runtimeRoot: string): boolean {
+  if (error instanceof RuntimeMutationError) return true;
+  const filesystemError = error as NodeJS.ErrnoException;
+  return filesystemError.code === "ENOENT"
+    && typeof filesystemError.path === "string"
+    && isContainedPath(runtimeRoot, path.resolve(filesystemError.path));
+}
+
+async function observeStableRuntime(
+  runtimeRoot: string,
+  blobs: BlobStore,
+  signal?: AbortSignal,
+): Promise<Map<string, RuntimeEntry>> {
+  for (let attempt = 1; attempt <= RUNTIME_OBSERVATION_ATTEMPTS; attempt += 1) {
+    try {
+      const first = await observeRuntime(runtimeRoot, blobs, signal);
+      const second = await observeRuntime(runtimeRoot, blobs, signal);
+      assertStableObservation(first, second);
+      return first;
+    } catch (error) {
+      const transient = isTransientRuntimeObservationError(error, runtimeRoot);
+      if (!transient || attempt === RUNTIME_OBSERVATION_ATTEMPTS) {
+        if (transient && !(error instanceof RuntimeMutationError)) {
+          throw new RuntimeMutationError("Runtime tree changed during scan.");
+        }
+        throw error;
+      }
+      signal?.throwIfAborted();
+      await new Promise((resolve) => setTimeout(resolve, RUNTIME_OBSERVATION_RETRY_DELAY_MS));
+    }
+  }
+  throw new RuntimeMutationError("Runtime tree changed during scan.");
 }
 
 function assertStableObservation(
@@ -273,9 +311,7 @@ export class RuntimeChangeScanner {
     ) throw new Error("Workspace path escapes its local instance.");
     await verifyBaselineTree(path.join(canonicalBaseline, "tree"), workspace.manifest, signal);
 
-    const firstObservation = await observeRuntime(canonicalRuntime, this.blobs, signal);
-    const secondObservation = await observeRuntime(canonicalRuntime, this.blobs, signal);
-    assertStableObservation(firstObservation, secondObservation);
+    const firstObservation = await observeStableRuntime(canonicalRuntime, this.blobs, signal);
     const baselineByPath = new Map(workspace.manifest.entries.map((entry) => [entry.path, entry]));
     const paths = new Set([...baselineByPath.keys(), ...firstObservation.keys()]);
     const files: ChangeFile[] = [];

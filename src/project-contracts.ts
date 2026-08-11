@@ -1,17 +1,32 @@
-export const PROJECT_MANIFEST_VERSION = 1 as const;
+export const PROJECT_MANIFEST_VERSION = 2 as const;
 export const PROJECT_MANIFEST_SCHEMA_URL = "https://larger.design/schemas/larger-project.schema.json" as const;
 export const APPLICATION_STATE_VERSION = 1 as const;
 export const PROJECT_TRUST_STORE_VERSION = 1 as const;
 
 export type ProjectManifestVersion = typeof PROJECT_MANIFEST_VERSION;
 
+export interface RuntimeReadiness {
+  path: string;
+  timeoutMs: number;
+}
+
+export interface RuntimeEnvironment {
+  literals: Record<string, string>;
+  inherit: string[];
+  secrets: Record<string, string>;
+}
+
 export interface RuntimeProfile {
   command: string[];
   workingDirectory: string;
-  host: "127.0.0.1" | "localhost";
+  dependencyRoot: string;
+  host: "127.0.0.1";
   preferredPort: number;
+  readiness: RuntimeReadiness;
   entryRoute: string;
-  editorAdapter: string;
+  environment: RuntimeEnvironment;
+  runtimeAdapter: string;
+  editorAdapter: string | null;
 }
 
 export interface ProjectManifest {
@@ -49,7 +64,7 @@ export interface RecentProject extends ProjectIdentity {
 export interface ProjectPersonalState {
   selectedRuntimeProfile?: string;
   lastRoute?: string;
-  selectedSection?: "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "servers";
+  selectedSection?: "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "canvas" | "servers";
 }
 
 export interface ApplicationState {

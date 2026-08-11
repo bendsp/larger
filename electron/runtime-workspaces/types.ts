@@ -61,12 +61,28 @@ export type StagingPhase =
   | "baseline-prepared"
   | "baseline-installed"
   | "runtime-materialized"
+  | "runtime-preparation-started"
+  | "runtime-prepared"
   | "runtime-installed"
   | "before-publication";
+
+export interface UnpublishedRuntimeWorkspace {
+  readonly baselineIdentity: string;
+  readonly baselinePath: string;
+  readonly runtimeId: string;
+  /**
+   * A provider-owned staging path. Callers may prepare this tree, but must not
+   * retain the path after the hook completes. The provider publishes or
+   * removes it as one transaction.
+   */
+  readonly runtimePath: string;
+  readonly manifest: BaselineManifest;
+}
 
 export interface StageWorkspaceOptions {
   readonly signal?: AbortSignal;
   readonly onPhase?: (phase: StagingPhase) => void | Promise<void>;
+  readonly prepareRuntime?: (candidate: UnpublishedRuntimeWorkspace) => void | Promise<void>;
 }
 
 export interface MaterializationBackend {

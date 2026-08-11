@@ -1,11 +1,11 @@
 import type { ProjectIdentity } from "../../src/project-contracts.js";
 import { RuntimeWorkspaceProvider } from "./provider.js";
-import type { RuntimeWorkspace } from "./types.js";
+import type { RuntimeWorkspace, StageWorkspaceOptions } from "./types.js";
 
 export interface RuntimeWorkspaceAccess {
-  stage(sourceRoot: string, options?: { signal?: AbortSignal }): Promise<RuntimeWorkspace>;
+  stage(sourceRoot: string, options?: StageWorkspaceOptions): Promise<RuntimeWorkspace>;
   current(): Promise<RuntimeWorkspace | undefined>;
-  resetCurrent(signal?: AbortSignal): Promise<RuntimeWorkspace>;
+  resetCurrent(options?: AbortSignal | StageWorkspaceOptions): Promise<RuntimeWorkspace>;
 }
 
 export interface RuntimeWorkspaceRegistryOptions {

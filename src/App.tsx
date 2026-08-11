@@ -9,6 +9,7 @@ import {
   ImageIcon,
   InfoIcon,
   LayoutDashboardIcon,
+  MonitorPlayIcon,
   PaletteIcon,
   PlayIcon,
   PlusIcon,
@@ -75,12 +76,14 @@ import {
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { useProjects } from "@/projects/use-projects";
 import { ChangeWorkspace, useChanges } from "@/changes";
+import { RuntimeCanvasWorkspace, RuntimeWorkspace, useRuntime } from "@/runtime";
 
-type ProjectSection = "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "servers";
+type ProjectSection = "overview" | "changes" | "components" | "design-system" | "assets" | "routes" | "canvas" | "servers";
 
 const sections = [
   { id: "overview", label: "Overview", icon: LayoutDashboardIcon },
@@ -89,6 +92,7 @@ const sections = [
   { id: "design-system", label: "Design system", icon: PaletteIcon },
   { id: "assets", label: "Assets", icon: ImageIcon },
   { id: "routes", label: "Routes", icon: RouteIcon },
+  { id: "canvas", label: "Canvas", icon: MonitorPlayIcon },
   { id: "servers", label: "Servers", icon: ServerIcon },
 ] satisfies Array<{ id: ProjectSection; label: string; icon: typeof LayoutDashboardIcon }>;
 
@@ -367,13 +371,12 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
   return <Item size="xs" className="rounded-none px-0"><ItemContent><ItemDescription>{label}</ItemDescription></ItemContent><ItemActions><span className={mono ? "max-w-64 truncate font-mono text-xs" : "text-xs"} title={value}>{value}</span></ItemActions></Item>;
 }
 
-function PlaceholderSection({ section }: { section: Exclude<ProjectSection, "overview" | "changes"> }) {
+function PlaceholderSection({ section }: { section: Exclude<ProjectSection, "overview" | "changes" | "canvas" | "servers"> }) {
   const details = {
     components: [BlocksIcon, "Components", "No components have been indexed yet."],
     "design-system": [PaletteIcon, "Design system", "Brand tokens and reusable styles will live here."],
     assets: [ImageIcon, "Assets", "Project assets will be indexed without moving them from source."],
     routes: [RouteIcon, "Routes", "Route discovery will follow the selected workspace package."],
-    servers: [ServerIcon, "Servers", "No development servers are running."],
   }[section] as [typeof BlocksIcon, string, string];
   const [Icon, title, description] = details;
   return <Empty className="h-full rounded-none"><EmptyHeader><EmptyMedia variant="icon"><Icon /></EmptyMedia><EmptyTitle>{title}</EmptyTitle><EmptyDescription>{description}</EmptyDescription></EmptyHeader></Empty>;
@@ -392,8 +395,17 @@ function TrustControl({ active, project }: { active: ActiveProject; project: Ret
   );
 }
 
-function ProjectSettingsControl({ active, project }: { active: ActiveProject; project: ReturnType<typeof useProjects> }) {
-  const [open, setOpen] = useState(false);
+function ProjectSettingsControl({
+  active,
+  project,
+  open,
+  onOpenChange,
+}: {
+  active: ActiveProject;
+  project: ReturnType<typeof useProjects>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const profile = active.manifest.runtimeProfiles[active.manifest.defaultRuntimeProfile]!;
   const [name, setName] = useState(active.manifest.name);
   const [command, setCommand] = useState<string[]>([...profile.command]);
@@ -409,7 +421,7 @@ function ProjectSettingsControl({ active, project }: { active: ActiveProject; pr
 
   const changeOpen = (nextOpen: boolean) => {
     if (nextOpen && !open) resetDraft();
-    setOpen(nextOpen);
+    onOpenChange(nextOpen);
   };
 
   const save = async (event: FormEvent) => {
@@ -428,7 +440,7 @@ function ProjectSettingsControl({ active, project }: { active: ActiveProject; pr
       },
     };
     const result = await project.updateManifest(active.generation, manifest);
-    if (result?.status === "completed" && !result.snapshot.problem) setOpen(false);
+    if (result?.status === "completed" && !result.snapshot.problem) onOpenChange(false);
   };
 
   return (
@@ -443,7 +455,7 @@ function ProjectSettingsControl({ active, project }: { active: ActiveProject; pr
               <CommandArgumentsEditor id="settings-command" value={command} onChange={setCommand} />
               <FieldGroup className="grid grid-cols-2 gap-4"><Field><FieldLabel htmlFor="settings-port">Port</FieldLabel><Input id="settings-port" type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(event.target.value)} required /></Field><Field><FieldLabel htmlFor="settings-route">Entry route</FieldLabel><Input id="settings-route" value={entryRoute} onChange={(event) => setEntryRoute(event.target.value)} required /></Field></FieldGroup>
             </FieldGroup></div>
-          <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={project.busy}>Save settings</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="submit" disabled={project.busy}>Save settings</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -452,18 +464,40 @@ function ProjectSettingsControl({ active, project }: { active: ActiveProject; pr
 
 function ProjectStudio({ active, project }: { active: ActiveProject; project: ReturnType<typeof useProjects> }) {
   const changes = useChanges(active.generation, active.identity.instanceKey);
+  const runtime = useRuntime(active.generation, active.identity.instanceKey);
   const [section, setSection] = useState<ProjectSection>(active.personalState.selectedSection ?? "overview");
-  const projectControlsBusy = project.busy || changes.operation === "applying" || changes.operation === "recovering";
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [sidebarHovered, setSidebarHovered] = useState(false);
+  const [selectedRuntimeProfile, setSelectedRuntimeProfile] = useState(
+    active.personalState.selectedRuntimeProfile ?? active.manifest.defaultRuntimeProfile,
+  );
+  const projectControlsBusy = project.busy || runtime.busy || changes.operation === "applying" || changes.operation === "recovering";
   const selectSection = (next: ProjectSection) => {
     setSection(next);
     void project.updatePersonalState(active.generation, { ...active.personalState, selectedSection: next });
   };
+  const selectRuntimeProfile = (profileName: string) => {
+    setSelectedRuntimeProfile(profileName);
+    void project.updatePersonalState(active.generation, {
+      ...active.personalState,
+      selectedRuntimeProfile: profileName,
+    });
+  };
+  useEffect(() => {
+    const stored = active.personalState.selectedRuntimeProfile;
+    if (stored) setSelectedRuntimeProfile(stored);
+  }, [active.personalState.selectedRuntimeProfile]);
   useEffect(() => window.largerCanvas?.hide(), [active.identity.instanceKey, section]);
   return (
     <SidebarProvider className="h-screen min-h-0 overflow-hidden">
-      <Sidebar collapsible="icon">
+      <Sidebar
+        collapsible="icon"
+        onMouseEnter={() => setSidebarHovered(true)}
+        onMouseLeave={() => setSidebarHovered(false)}
+      >
         <SidebarHeader>
-          <DropdownMenu>
+          <DropdownMenu open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
             <DropdownMenuTrigger render={<SidebarMenuButton size="lg" tooltip="Project" />}>
               <div className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"><BlocksIcon className="size-4" /></div>
               <div className="min-w-0 flex-1 text-left"><div className="truncate text-sm font-medium">{active.manifest.name}</div><div className="truncate text-xs text-muted-foreground">{active.identity.canonicalPath}</div></div>
@@ -480,7 +514,7 @@ function ProjectStudio({ active, project }: { active: ActiveProject; project: Re
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="min-h-0 min-w-0">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4"><SidebarTrigger /><Separator orientation="vertical" className="h-4" /><div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{sections.find((item) => item.id === section)?.label}</h1></div>{project.snapshot?.transition && <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />{project.snapshot.transition.kind.replaceAll("-", " ")}</div>}<ProjectSettingsControl active={active} project={project} /><TrustControl active={active} project={project} /></header>
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4"><SidebarTrigger /><Separator orientation="vertical" className="h-4" /><div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{sections.find((item) => item.id === section)?.label}</h1></div>{runtime.session && <Badge variant="outline">{runtime.session.mode === "managed" ? "Running" : "Preview attached"}</Badge>}{project.snapshot?.transition && <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3.5" />{project.snapshot.transition.kind.replaceAll("-", " ")}</div>}<ProjectSettingsControl active={active} project={project} open={settingsOpen} onOpenChange={setSettingsOpen} /><TrustControl active={active} project={project} /></header>
         {(project.snapshot?.problem || project.error) && <div className="px-4 pt-4">{project.snapshot?.problem ? <ProblemAlert snapshot={project.snapshot} /> : <Alert variant="destructive"><InfoIcon /><AlertTitle>Project operation failed</AlertTitle><AlertDescription>{project.error}</AlertDescription></Alert>}</div>}
         <div className="min-h-0 flex-1">{section === "overview" ? <ProjectOverview active={active} /> : section === "changes" ? (
           <ChangeWorkspace
@@ -500,11 +534,39 @@ function ProjectStudio({ active, project }: { active: ActiveProject; project: Re
             onDiscard={(snapshot) => changes.discard(snapshot).then(() => undefined)}
             onRecover={(snapshot, action) => changes.recover(snapshot, action).then(() => undefined)}
           />
+        ) : section === "canvas" ? (
+          <CanvasWithSidebarAwareness
+            generation={active.generation}
+            session={runtime.session}
+            suspended={settingsOpen || projectMenuOpen}
+            sidebarHovered={sidebarHovered}
+            onOpenServers={() => selectSection("servers")}
+          />
+        ) : section === "servers" ? (
+          <RuntimeWorkspace
+            runtime={runtime}
+            trusted={active.trust === "trusted" && !project.snapshot?.transition}
+            selectedProfile={selectedRuntimeProfile}
+            onSelectProfile={selectRuntimeProfile}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenCanvas={() => selectSection("canvas")}
+          />
         ) : <PlaceholderSection section={section} />}</div>
         <footer className="flex h-10 shrink-0 items-center justify-between border-t px-4 text-xs text-muted-foreground"><span className="truncate font-mono">{active.identity.canonicalPath}</span>{active.trust === "trusted" && !active.workspace && <Button size="xs" variant="ghost" disabled={project.busy} onClick={() => void project.prepareWorkspace(active.generation)}><PlayIcon data-icon="inline-start" />Prepare workspace</Button>}</footer>
       </SidebarInset>
     </SidebarProvider>
   );
+}
+
+function CanvasWithSidebarAwareness({
+  sidebarHovered,
+  suspended,
+  ...props
+}: React.ComponentProps<typeof RuntimeCanvasWorkspace> & { sidebarHovered: boolean }) {
+  const sidebar = useSidebar();
+  const sidebarObscuresCanvas = (sidebar.isMobile && sidebar.openMobile)
+    || (!sidebar.isMobile && sidebar.state === "collapsed" && sidebarHovered);
+  return <RuntimeCanvasWorkspace {...props} suspended={suspended || sidebarObscuresCanvas} />;
 }
 
 export function App() {

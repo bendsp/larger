@@ -73,11 +73,16 @@ test("derives text and unsupported filesystem changes with stable IDs", async (t
   await symlink("modify.txt", path.join(runtimeSrc, "link.txt"));
   await mkdir(path.join(workspace.runtimePath, "node_modules"));
   await writeFile(path.join(workspace.runtimePath, "node_modules", "ignored.js"), "ignored");
+  await writeFile(
+    path.join(runtimeSrc, ".react-rewrite-123-4f0e9279-67c0-4d14-966a-d593834a0fbf.tmp"),
+    "editor transaction scratch",
+  );
 
   const first = await scanner.scan(workspace);
   const second = await scanner.scan(workspace);
   assert.deepEqual(first, second);
   assert.equal(first.files.some((file) => file.path.includes("node_modules")), false);
+  assert.equal(first.files.some((file) => file.path.includes(".react-rewrite-")), false);
 
   const modified = first.files.find((file) => file.path === "src/modify.txt");
   assert.equal(modified?.kind, "text");

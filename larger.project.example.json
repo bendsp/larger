@@ -1,6 +1,6 @@
 {
   "$schema": "https://larger.design/schemas/larger-project.schema.json",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "projectId": "example.react-app",
   "name": "Example React app",
   "defaultRuntimeProfile": "development",
@@ -8,16 +8,23 @@
     "development": {
       "command": [
         "pnpm",
-        "dev",
-        "--host",
-        "{host}",
-        "--port",
-        "{port}"
+        "dev"
       ],
       "workingDirectory": ".",
+      "dependencyRoot": ".",
       "host": "127.0.0.1",
       "preferredPort": 3100,
+      "readiness": {
+        "path": "/",
+        "timeoutMs": 60000
+      },
       "entryRoute": "/",
+      "environment": {
+        "literals": {},
+        "inherit": [],
+        "secrets": {}
+      },
+      "runtimeAdapter": "vite",
       "editorAdapter": "react-rewrite"
     }
   }

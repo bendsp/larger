@@ -14,7 +14,7 @@
     "build:electron": "node scripts/build-electron.mjs",
     "build": "pnpm typecheck && pnpm build:electron && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build:electron && vite build && tsx --test server/*.test.ts electron/**/*.test.ts test/**/*.test.ts"
+    "test": "pnpm build:electron && vite build && node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -36,10 +36,12 @@
     "@types/node": "^24.2.1",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.2.0",
     "concurrently": "^9.2.0",
     "electron": "43.3.0",
     "esbuild": "^0.28.2",
+    "next": "16.3.0",
     "playwright-core": "^1.62.1",
     "shadcn": "^4.16.2",
     "tailwindcss": "^4.3.3",
@@ -51,7 +53,10 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "patchedDependencies": {
+      "react-rewrite-cli@0.1.1": "patches/react-rewrite-cli@0.1.1.patch"
+    }
   },
   "engines": {
     "node": ">=20"
